@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "prefix": {
+      "value": "store-agent"
+    },
+    "containerRegistryServer": {
+      "value": "myregistry.azurecr.io"
+    },
+    "containerRegistryUsername": {
+      "value": "myregistry"
+    },
+    "containerRegistryPassword": {
+      "value": "replace-me"
+    },
+    "apiImage": {
+      "value": "store-agent/api:latest"
+    },
+    "workerImage": {
+      "value": "store-agent/worker:latest"
+    },
+    "postgresAdminLogin": {
+      "value": "storeagent"
+    },
+    "postgresAdminPassword": {
+      "value": "replace-me"
+    },
+    "slackBotToken": {
+      "value": "xoxb-..."
+    },
+    "slackSigningSecret": {
+      "value": "replace-me"
+    },
+    "openAiApiKey": {
+      "value": "sk-..."
+    },
+    "ascKeyId": {
+      "value": "ABC1234567"
+    },
+    "ascIssuerId": {
+      "value": "00000000-0000-0000-0000-000000000000"
+    },
+    "ascPrivateKeyB64": {
+      "value": "base64-encoded-private-key"
+    }
+  }
+}
