@@ -6,10 +6,12 @@ import { once } from "node:events";
 import SlackBolt from "@slack/bolt";
 import {
   type DraftCommandInput,
+  type OpenAiErrorSummary,
   hashApprovalToken,
   isWriteAction,
   modalMetadataSchema,
   OpenAiCommandPlanner,
+  OpenAiErrorSummarizer,
   OpenAiStatusSummarizer,
   PostgresStore,
   requireApprovalAccess,
@@ -42,6 +44,12 @@ function toErrorMessage(error: unknown): string {
   }
 
   return "An unknown error occurred.";
+}
+
+function formatErrorSummary(summary: OpenAiErrorSummary): string {
+  return [summary.shortSummary, ...summary.detailLines.map((line) => `- ${line}`)].join(
+    "\n"
+  );
 }
 
 function parseOptionalValue(value: unknown): string | undefined {
@@ -122,6 +130,10 @@ async function main(): Promise<void> {
     apiKey: config.OPENAI_API_KEY,
     model: config.OPENAI_MODEL
   });
+  const errorSummarizer = new OpenAiErrorSummarizer({
+    apiKey: config.OPENAI_API_KEY,
+    model: config.OPENAI_MODEL
+  });
   const statusSummarizer = new OpenAiStatusSummarizer({
     apiKey: config.OPENAI_API_KEY,
     model: config.OPENAI_MODEL
@@ -192,6 +204,7 @@ async function main(): Promise<void> {
     await ack();
 
     const metadata = modalMetadataSchema.parse(JSON.parse(view.private_metadata));
+    let draft: DraftCommandInput | null = null;
 
     try {
       const submitRequestKey = stableKey([
@@ -220,7 +233,7 @@ async function main(): Promise<void> {
 
       requireRequestAccess(await store.getSlackUser(body.user.id));
 
-      const draft = parseModalDraft(
+      draft = parseModalDraft(
         view.state.values as Record<string, Record<string, unknown>>
       );
       const normalizedRequest = await planner.parseCommand(draft);
@@ -329,11 +342,27 @@ async function main(): Promise<void> {
         })
       });
     } catch (error) {
+      console.error("Unable to plan request", error);
+      const rawError = toErrorMessage(error);
+      let slackMessage = rawError;
+
+      if (draft) {
+        try {
+          const summary = await errorSummarizer.summarizePlanningError({
+            rawCommand: draft.rawCommand,
+            rawError
+          });
+          slackMessage = formatErrorSummary(summary);
+        } catch (summaryError) {
+          console.error("OpenAI planning-error summarization failed", summaryError);
+        }
+      }
+
       await postResponse(metadata.responseUrl, {
         response_type: "ephemeral",
         replace_original: false,
-        text: toErrorMessage(error),
-        blocks: buildErrorBlocks("Unable to plan request", toErrorMessage(error))
+        text: slackMessage,
+        blocks: buildErrorBlocks("Unable to plan request", slackMessage)
       });
     }
   });

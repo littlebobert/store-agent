@@ -21,6 +21,12 @@ const statusSummarySchema = z.object({
 });
 export type OpenAiStatusSummary = z.infer<typeof statusSummarySchema>;
 
+const errorSummarySchema = z.object({
+  shortSummary: z.string().trim().min(1),
+  detailLines: z.array(z.string().trim().min(1)).min(1).max(5)
+});
+export type OpenAiErrorSummary = z.infer<typeof errorSummarySchema>;
+
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
@@ -33,6 +39,27 @@ function extractJsonPayload(content: string): string {
   }
 
   return content.trim();
+}
+
+function replaceNullsWithUndefined(value: unknown): unknown {
+  if (value === null) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceNullsWithUndefined(item));
+  }
+
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        replaceNullsWithUndefined(item)
+      ])
+    );
+  }
+
+  return value;
 }
 
 function truncateForPrompt(content: string, maxChars = 50000): string {
@@ -74,6 +101,7 @@ export class OpenAiCommandPlanner {
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
             "Use submit_release_for_review for requests about sending a build to Apple review or public App Store release.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
+            "Omit unknown optional fields instead of returning null.",
             "Output JSON only."
           ].join(" ")
         },
@@ -96,7 +124,7 @@ export class OpenAiCommandPlanner {
     }
 
     const parsed = plannerOutputSchema.parse(
-      JSON.parse(extractJsonPayload(content))
+      replaceNullsWithUndefined(JSON.parse(extractJsonPayload(content)))
     );
 
     return finalizeNormalizedActionRequest(draft, parsed);
@@ -155,5 +183,56 @@ export class OpenAiStatusSummarizer {
     }
 
     return statusSummarySchema.parse(JSON.parse(extractJsonPayload(content)));
+  }
+}
+
+export class OpenAiErrorSummarizer {
+  private readonly client: OpenAI;
+
+  private readonly model: string;
+
+  public constructor(options: OpenAiCommandPlannerOptions) {
+    this.client = new OpenAI({ apiKey: options.apiKey });
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+  }
+
+  public async summarizePlanningError(input: {
+    rawCommand: string;
+    rawError: string;
+  }): Promise<OpenAiErrorSummary> {
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You summarize release-planning failures for Slack operators.",
+            "Turn noisy technical errors into a concise, factual explanation.",
+            "Do not invent causes not supported by the error.",
+            "Do not include stack traces, raw JSON, or shell command output unless absolutely necessary.",
+            "Prefer actionable next steps like checking app alias, version, App Store Connect credentials, or asc output.",
+            "Return JSON only with keys shortSummary and detailLines.",
+            "shortSummary must be a single sentence under 140 characters.",
+            "detailLines must contain 2-5 short lines."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            rawCommand: input.rawCommand,
+            rawError: truncateForPrompt(input.rawError, 25000)
+          })
+        }
+      ]
+    });
+
+    const content = completion.choices[0]?.message.content;
+    if (!content) {
+      throw new Error("OpenAI did not return an error summary.");
+    }
+
+    return errorSummarySchema.parse(JSON.parse(extractJsonPayload(content)));
   }
 }
