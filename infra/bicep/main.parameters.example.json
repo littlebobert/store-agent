@@ -5,14 +5,14 @@
     "prefix": {
       "value": "store-agent"
     },
-    "containerRegistryServer": {
-      "value": "myregistry.azurecr.io"
-    },
-    "containerRegistryUsername": {
+    "containerRegistryName": {
       "value": "myregistry"
     },
-    "containerRegistryPassword": {
-      "value": "replace-me"
+    "containerRegistryResourceGroup": {
+      "value": "my-shared-infra-rg"
+    },
+    "containerRegistrySubscriptionId": {
+      "value": "00000000-0000-0000-0000-000000000000"
     },
     "apiImage": {
       "value": "store-agent/api:latest"

@@ -1,15 +1,14 @@
 param location string = resourceGroup().location
 param prefix string = 'store-agent'
 
-@description('Container registry host name, for example myregistry.azurecr.io')
-param containerRegistryServer string
+@description('Azure Container Registry name, for example myregistry')
+param containerRegistryName string
 
-@description('Container registry username')
-param containerRegistryUsername string
+@description('Resource group containing the Azure Container Registry')
+param containerRegistryResourceGroup string = resourceGroup().name
 
-@secure()
-@description('Container registry password')
-param containerRegistryPassword string
+@description('Subscription containing the Azure Container Registry')
+param containerRegistrySubscriptionId string = subscription().subscriptionId
 
 @description('API image name and tag, for example store-agent/api:latest')
 param apiImage string
@@ -50,17 +49,19 @@ param ascIssuerId string
 param ascPrivateKeyB64 string
 
 var uniqueSuffix = uniqueString(resourceGroup().id, prefix)
-var keyVaultName = toLower('${prefix}${uniqueSuffix}kv')
+var compactPrefix = toLower(replace(prefix, '-', ''))
+var keyVaultName = '${take(compactPrefix, 9)}${take(uniqueSuffix, 13)}kv'
 var logAnalyticsName = '${prefix}-logs-${uniqueSuffix}'
 var containerEnvName = '${prefix}-cae-${uniqueSuffix}'
 var postgresName = toLower('${prefix}-${uniqueSuffix}-pg')
 var postgresDbName = 'store_agent'
 var postgresFqdn = '${postgresName}.postgres.database.azure.com'
-var serviceBusNamespaceName = toLower('${prefix}-${uniqueSuffix}-sb')
+var serviceBusNamespaceName = '${take(compactPrefix, 16)}-${take(uniqueSuffix, 8)}-bus'
 var apiIdentityName = '${prefix}-api-id-${uniqueSuffix}'
 var workerIdentityName = '${prefix}-worker-id-${uniqueSuffix}'
 var apiContainerAppName = '${prefix}-api'
 var workerJobName = '${prefix}-worker'
+var containerRegistryServer = '${containerRegistryName}.azurecr.io'
 var postgresConnectionString = 'postgresql://${postgresAdminLogin}:${postgresAdminPassword}@${postgresFqdn}:5432/${postgresDbName}?sslmode=require'
 
 resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -277,11 +278,23 @@ resource serviceBusConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-0
   }
 }
 
-resource acrPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  name: 'acr-password'
-  parent: keyVault
-  properties: {
-    value: containerRegistryPassword
+module apiIdentityAcrPull './modules/acr-pull-role.bicep' = {
+  name: 'api-acr-pull-assignment'
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  params: {
+    containerRegistryName: containerRegistryName
+    principalId: apiIdentity.properties.principalId
+    principalResourceId: apiIdentity.id
+  }
+}
+
+module workerIdentityAcrPull './modules/acr-pull-role.bicep' = {
+  name: 'worker-acr-pull-assignment'
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  params: {
+    containerRegistryName: containerRegistryName
+    principalId: workerIdentity.properties.principalId
+    principalResourceId: workerIdentity.id
   }
 }
 
@@ -306,16 +319,10 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: containerRegistryServer
-          username: containerRegistryUsername
-          passwordSecretRef: 'acr-password'
+          identity: apiIdentity.id
         }
       ]
       secrets: [
-        {
-          name: 'acr-password'
-          keyVaultUrl: acrPasswordSecret.properties.secretUriWithVersion
-          identity: apiIdentity.id
-        }
         {
           name: 'database-url'
           keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion
@@ -364,7 +371,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'api'
           image: '${containerRegistryServer}/${apiImage}'
           resources: {
-            cpu: 0.5
+            cpu: json('0.5')
             memory: '1Gi'
           }
           env: [
@@ -459,16 +466,10 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
       registries: [
         {
           server: containerRegistryServer
-          username: containerRegistryUsername
-          passwordSecretRef: 'acr-password'
+          identity: workerIdentity.id
         }
       ]
       secrets: [
-        {
-          name: 'acr-password'
-          keyVaultUrl: acrPasswordSecret.properties.secretUriWithVersion
-          identity: workerIdentity.id
-        }
         {
           name: 'database-url'
           keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion
@@ -535,7 +536,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           name: 'worker'
           image: '${containerRegistryServer}/${workerImage}'
           resources: {
-            cpu: 0.5
+            cpu: json('0.5')
             memory: '1Gi'
           }
           env: [

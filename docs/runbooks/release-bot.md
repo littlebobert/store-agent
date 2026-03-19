@@ -139,9 +139,21 @@ az acr build --registry <acr-name> --image store-agent/api:latest --file apps/ap
 az acr build --registry <acr-name> --image store-agent/worker:latest --file apps/worker/Dockerfile .
 ```
 
-### 2. Deploy infrastructure
+### 2. Enable ACR ARM-token auth for managed identity pulls
+
+The Bicep template uses user-assigned managed identities plus `AcrPull` role assignments instead of ACR admin credentials. Enable ARM audience tokens on the registry once:
+
+```bash
+az acr config authentication-as-arm update -r <acr-name> --status enabled
+```
+
+### 3. Deploy infrastructure
 
 Copy `infra/bicep/main.parameters.example.json` to your own parameter file and replace the placeholders, then deploy:
+
+- `containerRegistryName` should be your ACR name such as `kotoba`
+- `containerRegistryResourceGroup` should be the resource group that owns the ACR
+- If your ACR lives in a different subscription, also set `containerRegistrySubscriptionId`
 
 ```bash
 az deployment group create \
@@ -160,7 +172,7 @@ The Bicep stack provisions:
 - PostgreSQL Flexible Server and database
 - Log Analytics workspace
 
-### 3. Run database migration against Azure PostgreSQL
+### 4. Run database migration against Azure PostgreSQL
 
 Use the Azure database connection string from the Key Vault secret or compose it from the deployment outputs:
 
@@ -173,11 +185,11 @@ SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://placeholder/" \
 npx pnpm db:migrate
 ```
 
-### 4. Seed operators and app aliases
+### 5. Seed operators and app aliases
 
 Run the SQL seed statements against the Azure PostgreSQL database before testing Slack commands.
 
-### 5. Point Slack at Azure
+### 6. Point Slack at Azure
 
 Set the slash command and interactivity URLs to:
 
@@ -221,6 +233,13 @@ https://<container-app-fqdn>/slack/events
 - Confirm the Service Bus queue name matches `SERVICE_BUS_QUEUE_NAME`.
 - Inspect the Container Apps Job execution history and Log Analytics.
 - Confirm the Service Bus connection string secret is mounted into both the API and worker.
+
+### Container Apps cannot pull images from ACR
+
+- Confirm `az acr config authentication-as-arm update -r <acr-name> --status enabled` has been run for the registry.
+- Confirm the deployment parameter `containerRegistryName` matches the real ACR name.
+- If the ACR lives in another resource group or subscription, set `containerRegistryResourceGroup` and `containerRegistrySubscriptionId` correctly.
+- Check that the `AcrPull` role assignments were created for both user-assigned identities on the registry.
 
 ## Known Limits
 

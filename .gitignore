@@ -5,3 +5,7 @@ dist
 .DS_Store
 coverage
 .turbo
+
+infra/bicep/main.parameters.json
+infra/bicep/main.json
+infra/bicep/modules/*.json
