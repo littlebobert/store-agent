@@ -9,3 +9,7 @@ coverage
 infra/bicep/main.parameters.json
 infra/bicep/main.json
 infra/bicep/modules/*.json
+
+.azure-config/
+.dotnet-bundle/
+.tmp-home/
