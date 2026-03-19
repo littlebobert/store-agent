@@ -10,6 +10,7 @@ import {
   isWriteAction,
   modalMetadataSchema,
   OpenAiCommandPlanner,
+  OpenAiStatusSummarizer,
   PostgresStore,
   requireApprovalAccess,
   requireRequestAccess,
@@ -121,6 +122,10 @@ async function main(): Promise<void> {
     apiKey: config.OPENAI_API_KEY,
     model: config.OPENAI_MODEL
   });
+  const statusSummarizer = new OpenAiStatusSummarizer({
+    apiKey: config.OPENAI_API_KEY,
+    model: config.OPENAI_MODEL
+  });
   const providers = new ProviderRegistry({
     apple: {
       binaryPath: config.ASC_PATH,
@@ -133,8 +138,7 @@ async function main(): Promise<void> {
   );
 
   const receiver = new ExpressReceiver({
-    signingSecret: config.SLACK_SIGNING_SECRET,
-    processBeforeResponse: true
+    signingSecret: config.SLACK_SIGNING_SECRET
   });
 
   receiver.router.get("/healthz", (_req, res) => {
@@ -143,8 +147,7 @@ async function main(): Promise<void> {
 
   const app = new App({
     token: config.SLACK_BOT_TOKEN,
-    receiver,
-    processBeforeResponse: true
+    receiver
   });
 
   app.command(config.SLACK_COMMAND_NAME, async ({ ack, body, client }) => {
@@ -157,48 +160,32 @@ async function main(): Promise<void> {
       body.trigger_id
     ]);
 
-    const inserted = await store.recordProcessedRequest(requestKey, "slash", {
-      teamId: body.team_id ?? "",
-      channelId: body.channel_id,
-      userId: body.user_id,
-      text: body.text ?? ""
-    });
-
-    if (!inserted) {
-      await ack({
-        response_type: "ephemeral",
-        text: "This slash command was already received and has been ignored."
-      });
-      return;
-    }
-
-    try {
-      requireRequestAccess(await store.getSlackUser(body.user_id));
-    } catch (error) {
-      await ack({
-        response_type: "ephemeral",
-        text: toErrorMessage(error)
-      });
-      return;
-    }
-
     await ack();
 
-    const view = buildRequestModal(
-      config.SLACK_COMMAND_NAME,
-      {
-        channelId: body.channel_id,
-        responseUrl: body.response_url,
-        requestUserId: body.user_id,
-        triggerRequestKey: requestKey
-      },
-      body.text ?? ""
-    );
+    try {
+      const view = buildRequestModal(
+        config.SLACK_COMMAND_NAME,
+        {
+          channelId: body.channel_id,
+          responseUrl: body.response_url,
+          requestUserId: body.user_id,
+          triggerRequestKey: requestKey
+        },
+        body.text ?? ""
+      );
 
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view
-    });
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view
+      });
+    } catch (error) {
+      await postResponse(body.response_url, {
+        response_type: "ephemeral",
+        replace_original: false,
+        text: toErrorMessage(error),
+        blocks: buildErrorBlocks("Unable to open release modal", toErrorMessage(error))
+      });
+    }
   });
 
   app.view(REQUEST_MODAL_CALLBACK_ID, async ({ ack, body, view }) => {
@@ -207,6 +194,30 @@ async function main(): Promise<void> {
     const metadata = modalMetadataSchema.parse(JSON.parse(view.private_metadata));
 
     try {
+      const submitRequestKey = stableKey([
+        "view-submit",
+        metadata.triggerRequestKey,
+        body.user.id,
+        view.id
+      ]);
+      const inserted = await store.recordProcessedRequest(
+        submitRequestKey,
+        "view-submit",
+        {
+          triggerRequestKey: metadata.triggerRequestKey,
+          userId: body.user.id,
+          viewId: view.id
+        }
+      );
+
+      if (!inserted) {
+        return;
+      }
+
+      if (body.user.id !== metadata.requestUserId) {
+        throw new Error("Only the requesting Slack user can submit this modal.");
+      }
+
       requireRequestAccess(await store.getSlackUser(body.user.id));
 
       const draft = parseModalDraft(
@@ -228,10 +239,38 @@ async function main(): Promise<void> {
       }
 
       const provider = providers.get(normalizedRequest.provider);
-      const executionPlan = await provider.resolve({
+      let executionPlan = await provider.resolve({
         app: appAlias,
         request: normalizedRequest
       });
+
+      if (
+        normalizedRequest.actionType === "release_status" &&
+        "status" in executionPlan.rawProviderData
+      ) {
+        try {
+          const summary = await statusSummarizer.summarizeStatus({
+            appAlias: normalizedRequest.appAlias,
+            provider: normalizedRequest.provider,
+            statusPayload: executionPlan.rawProviderData.status as Record<
+              string,
+              unknown
+            >
+          });
+
+          executionPlan = {
+            ...executionPlan,
+            executionSummary: `Status for ${normalizedRequest.appAlias}: ${summary.shortSummary}`,
+            validationSummary: summary.detailLines,
+            rawProviderData: {
+              ...executionPlan.rawProviderData,
+              openAiStatusSummary: summary
+            }
+          };
+        } catch (error) {
+          console.error("OpenAI status summarization failed", error);
+        }
+      }
 
       if (!isWriteAction(normalizedRequest.actionType)) {
         await postResponse(metadata.responseUrl, {

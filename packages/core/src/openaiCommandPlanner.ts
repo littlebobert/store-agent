@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { z } from "zod";
 
 import {
   type DraftCommandInput,
@@ -7,10 +8,18 @@ import {
   type NormalizedActionRequest
 } from "./actions.js";
 
+export const DEFAULT_OPENAI_MODEL = "gpt-5.4";
+
 export interface OpenAiCommandPlannerOptions {
   apiKey: string;
   model?: string;
 }
+
+const statusSummarySchema = z.object({
+  shortSummary: z.string().trim().min(1),
+  detailLines: z.array(z.string().trim().min(1)).min(1).max(8)
+});
+export type OpenAiStatusSummary = z.infer<typeof statusSummarySchema>;
 
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
@@ -26,6 +35,14 @@ function extractJsonPayload(content: string): string {
   return content.trim();
 }
 
+function truncateForPrompt(content: string, maxChars = 50000): string {
+  if (content.length <= maxChars) {
+    return content;
+  }
+
+  return `${content.slice(0, maxChars)}\n[truncated]`;
+}
+
 export class OpenAiCommandPlanner {
   private readonly client: OpenAI;
 
@@ -33,7 +50,7 @@ export class OpenAiCommandPlanner {
 
   public constructor(options: OpenAiCommandPlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
-    this.model = options.model ?? "gpt-4.1-mini";
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
   }
 
   public async parseCommand(
@@ -83,5 +100,60 @@ export class OpenAiCommandPlanner {
     );
 
     return finalizeNormalizedActionRequest(draft, parsed);
+  }
+}
+
+export class OpenAiStatusSummarizer {
+  private readonly client: OpenAI;
+
+  private readonly model: string;
+
+  public constructor(options: OpenAiCommandPlannerOptions) {
+    this.client = new OpenAI({ apiKey: options.apiKey });
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+  }
+
+  public async summarizeStatus(input: {
+    appAlias: string;
+    provider: string;
+    statusPayload: Record<string, unknown>;
+  }): Promise<OpenAiStatusSummary> {
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You summarize App Store Connect or store release status payloads for Slack.",
+            "Use only facts present in the JSON payload.",
+            "Be concise and operator-friendly.",
+            "Prefer mentioning the currently live version, latest version, release state, and review state when present.",
+            "If the payload is ambiguous or missing key information, say so plainly instead of guessing.",
+            "Return JSON only with keys shortSummary and detailLines.",
+            "shortSummary must be a single sentence under 140 characters.",
+            "detailLines must contain 2-6 short factual lines."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            appAlias: input.appAlias,
+            provider: input.provider,
+            statusPayloadJson: truncateForPrompt(
+              JSON.stringify(input.statusPayload)
+            )
+          })
+        }
+      ]
+    });
+
+    const content = completion.choices[0]?.message.content;
+    if (!content) {
+      throw new Error("OpenAI did not return a status summary.");
+    }
+
+    return statusSummarySchema.parse(JSON.parse(extractJsonPayload(content)));
   }
 }

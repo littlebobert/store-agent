@@ -260,6 +260,12 @@ export function buildReadOnlyBlocks(
   request: NormalizedActionRequest,
   plan: ProviderExecutionPlan
 ): KnownBlock[] {
+  const summaryLabel =
+    request.actionType === "release_status"
+      ? "Status summary"
+      : "Validation summary";
+  const summaryLineCount = request.actionType === "release_status" ? 8 : 4;
+
   return [
     {
       type: "section",
@@ -293,7 +299,7 @@ export function buildReadOnlyBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Validation summary*\n${truncateLines(plan.validationSummary)}`
+        text: `*${summaryLabel}*\n${truncateLines(plan.validationSummary, summaryLineCount)}`
       }
     },
     {

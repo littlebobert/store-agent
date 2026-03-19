@@ -27,6 +27,11 @@ interface AscCommandResult {
   stderr: string;
 }
 
+interface ScalarEntry {
+  path: string;
+  value: string;
+}
+
 function quoteArg(arg: string): string {
   if (/^[a-zA-Z0-9._:/=-]+$/.test(arg)) {
     return arg;
@@ -70,6 +75,153 @@ function findFirstString(
   }
 
   return undefined;
+}
+
+function toScalarString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return null;
+}
+
+function collectScalarEntries(
+  value: unknown,
+  path = "",
+  depth = 0
+): ScalarEntry[] {
+  if (depth > 4) {
+    return [];
+  }
+
+  const scalar = toScalarString(value);
+  if (scalar !== null) {
+    return [{ path: path || "value", value: scalar }];
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).flatMap((item, index) =>
+      collectScalarEntries(item, `${path}[${index}]`, depth + 1)
+    );
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  const entries: ScalarEntry[] = [];
+  for (const [key, item] of Object.entries(record)) {
+    entries.push(
+      ...collectScalarEntries(item, path ? `${path}.${key}` : key, depth + 1)
+    );
+    if (entries.length >= 40) {
+      break;
+    }
+  }
+
+  return entries;
+}
+
+function looksLikeVersion(value: string): boolean {
+  return /^\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?$/.test(value);
+}
+
+function humanizePath(path: string): string {
+  const label = path.split(".").at(-1) ?? path;
+  return label
+    .replace(/\[\d+\]/g, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function findEntry(
+  entries: ScalarEntry[],
+  pathRegex: RegExp,
+  predicate?: (entry: ScalarEntry) => boolean
+): ScalarEntry | undefined {
+  return entries.find(
+    (entry) =>
+      pathRegex.test(entry.path) &&
+      (predicate ? predicate(entry) : true)
+  );
+}
+
+function summarizeStatusPayload(payload: Record<string, unknown>): string[] {
+  const explicitSummary =
+    findFirstString(payload, ["summary", "message", "status"]) ?? null;
+  const entries = collectScalarEntries(payload);
+  const versionEntries = entries.filter((entry) => looksLikeVersion(entry.value));
+
+  const liveVersion = findEntry(
+    versionEntries,
+    /(live|ready.*sale|current.*version|released.*version|appStore.*version)/i
+  );
+  const latestVersion = findEntry(
+    versionEntries,
+    /(latest.*version|next.*version|version$|display.*version)/i
+  );
+  const reviewStatus = findEntry(
+    entries,
+    /(review.*status|review.*state)/i,
+    (entry) => !looksLikeVersion(entry.value)
+  );
+  const releaseStatus = findEntry(
+    entries,
+    /(release.*status|appStore.*state|status|state)/i,
+    (entry) => !looksLikeVersion(entry.value)
+  );
+
+  const lines: string[] = [];
+
+  if (liveVersion) {
+    lines.push(`Live version: ${liveVersion.value}`);
+  }
+
+  if (
+    latestVersion &&
+    latestVersion.value !== liveVersion?.value
+  ) {
+    lines.push(`Latest version: ${latestVersion.value}`);
+  }
+
+  if (releaseStatus) {
+    lines.push(`${humanizePath(releaseStatus.path)}: ${releaseStatus.value}`);
+  }
+
+  if (
+    reviewStatus &&
+    reviewStatus.path !== releaseStatus?.path &&
+    reviewStatus.value !== releaseStatus?.value
+  ) {
+    lines.push(`${humanizePath(reviewStatus.path)}: ${reviewStatus.value}`);
+  }
+
+  if (lines.length === 0 && explicitSummary) {
+    lines.push(explicitSummary);
+  }
+
+  if (lines.length === 0) {
+    lines.push(
+      ...entries
+        .slice(0, 4)
+        .map((entry) => `${humanizePath(entry.path)}: ${entry.value}`)
+    );
+  }
+
+  if (lines.length === 0) {
+    lines.push("Fetched App Store Connect status.");
+  }
+
+  return Array.from(new Set(lines));
 }
 
 function extractBuildDetails(payload: Record<string, unknown>): {
@@ -220,6 +372,7 @@ export class AppleAscProvider implements ProviderAdapter {
         ["status", "--app", app.appId, "--output", "json"],
         this.env
       );
+      const statusSummary = summarizeStatusPayload(status.json);
 
       return providerExecutionPlanSchema.parse({
         provider: request.provider,
@@ -228,8 +381,8 @@ export class AppleAscProvider implements ProviderAdapter {
         appId: app.appId,
         buildStrategy: request.buildStrategy,
         previewCommands: [status.displayCommand],
-        validationSummary: summarizeValidation(status.json),
-        executionSummary: `Fetched App Store Connect status for ${request.appAlias}.`,
+        validationSummary: statusSummary,
+        executionSummary: `Status for ${request.appAlias}: ${statusSummary[0]}`,
         rawProviderData: {
           status: status.json
         }

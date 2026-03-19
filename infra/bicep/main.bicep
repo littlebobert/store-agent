@@ -27,7 +27,7 @@ param postgresSkuName string = 'Standard_B1ms'
 param postgresVersion string = '16'
 param serviceBusQueueName string = 'release-requests'
 param slackCommandName string = '/asc'
-param openAiModel string = 'gpt-4.1-mini'
+param openAiModel string = 'gpt-5.4'
 param approvalTtlMinutes int = 20
 
 @secure()

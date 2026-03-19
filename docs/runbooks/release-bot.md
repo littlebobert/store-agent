@@ -120,7 +120,7 @@ The API and worker expect `asc` to run headlessly with:
 
 ## OpenAI Command Planning
 
-The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese.
+The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese. It also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
 
 Example phrases:
 

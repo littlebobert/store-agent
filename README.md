@@ -6,6 +6,7 @@ Slack bot for App Store Connect release operations, designed for Azure deploymen
 
 - Accepts English or Japanese release requests through `/asc`.
 - Uses OpenAI to normalize the request into a typed action.
+- Uses OpenAI to summarize store status output for Slack.
 - Resolves the exact App Store Connect target with `asc`.
 - Requires an explicit Slack confirmation before any write action runs.
 - Queues confirmed jobs through Azure Service Bus and executes them in a worker.

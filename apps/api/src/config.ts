@@ -6,7 +6,7 @@ const configSchema = z.object({
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_COMMAND_NAME: z.string().min(1).default("/asc"),
   OPENAI_API_KEY: z.string().min(1),
-  OPENAI_MODEL: z.string().min(1).default("gpt-4.1-mini"),
+  OPENAI_MODEL: z.string().min(1).default("gpt-5.4"),
   APPROVAL_TTL_MINUTES: z.coerce.number().int().positive().default(20),
   SERVICE_BUS_CONNECTION_STRING: z.string().min(1),
   SERVICE_BUS_QUEUE_NAME: z.string().min(1).default("release-requests"),
