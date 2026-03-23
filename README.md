@@ -10,6 +10,7 @@ Slack bot for App Store Connect release operations, designed for Azure deploymen
 - Resolves the exact configured app alias and App Store Connect target with `asc`.
 - Shows the exact `asc` plan in Slack before any write action runs and requires explicit confirmation.
 - Queues confirmed jobs through Azure Service Bus and executes them in a worker.
+- Supports cancellation of App Store review submissions by app and version.
 
 ## Workspace
 

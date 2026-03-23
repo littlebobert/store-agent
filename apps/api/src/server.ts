@@ -974,23 +974,31 @@ async function main(): Promise<void> {
         buildId: approval.executionPlan.buildId ?? null
       });
       await queue.sendReleaseRequest({ approvalId: approval.approvalId });
+      const queuedLabel =
+        approval.actionType === "cancel_review_submission"
+          ? "Cancellation queued"
+          : "Release queued";
+      const revalidationCopy =
+        approval.actionType === "cancel_review_submission"
+          ? "The worker will revalidate the current submission and then run:"
+          : "The worker will revalidate the exact build and then run:";
 
       await respond({
         replace_original: true,
-        text: `Release queued. ${approval.executionPlan.executionSummary}`,
+        text: `${queuedLabel}. ${approval.executionPlan.executionSummary}`,
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*Release queued*\n${approval.executionPlan.executionSummary}`
+              text: `*${queuedLabel}*\n${approval.executionPlan.executionSummary}`
             }
           },
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `The worker will revalidate the exact build and then run:\n\`\`\`${approval.executionPlan.previewCommands.at(-1) ?? "asc submit create"}\`\`\``
+              text: `${revalidationCopy}\n\`\`\`${approval.executionPlan.previewCommands.at(-1) ?? "asc submit create"}\`\`\``
             }
           }
         ]

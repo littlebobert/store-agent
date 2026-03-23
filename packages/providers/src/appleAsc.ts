@@ -615,6 +615,29 @@ function buildSubmitCreateArgs(
   ];
 }
 
+function buildSubmitStatusArgs(versionId: string): string[] {
+  return [
+    "submit",
+    "status",
+    "--version-id",
+    versionId,
+    "--output",
+    "json"
+  ];
+}
+
+function buildSubmitCancelArgs(versionId: string): string[] {
+  return [
+    "submit",
+    "cancel",
+    "--version-id",
+    versionId,
+    "--confirm",
+    "--output",
+    "json"
+  ];
+}
+
 function escapeStringsValue(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
@@ -786,6 +809,17 @@ function summarizePrepareReleasePlan(input: {
   ];
 }
 
+function summarizeSubmissionCancellationPlan(input: {
+  version: string;
+  statusPayload: Record<string, unknown>;
+}): string[] {
+  const lines = summarizeStatusPayload(input.statusPayload).slice(0, 3);
+  lines.push(
+    `Will cancel the current App Store review submission for version ${input.version}.`
+  );
+  return Array.from(new Set(lines));
+}
+
 function extractLocalizedReleaseNotesFromPlan(
   plan: ProviderExecutionPlan
 ): LocalizedReleaseNotes {
@@ -880,6 +914,10 @@ function ensureWriteAction(
   request: NormalizedActionRequest,
   plan: ProviderExecutionPlan
 ): void {
+  if (request.actionType === "cancel_review_submission") {
+    return;
+  }
+
   if (
     (request.actionType !== "submit_release_for_review" &&
       request.actionType !== "prepare_release_for_review") ||
@@ -933,6 +971,55 @@ export class AppleAscProvider implements ProviderAdapter {
         executionSummary: `Status for ${request.appAlias}: ${statusSummary[0]}`,
         rawProviderData: {
           status: status.json
+        }
+      });
+    }
+
+    if (request.actionType === "cancel_review_submission") {
+      const version = requireVersion(request);
+      const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: app.appId,
+        version,
+        platform: app.platform,
+        env: this.env
+      });
+      const resolvedVersion = requireAppStoreVersionRecord(
+        versionRecord,
+        version,
+        app.platform
+      );
+      const submissionStatus = await readProcessOutput(
+        this.binaryPath,
+        buildSubmitStatusArgs(resolvedVersion.versionId),
+        this.env
+      );
+
+      return providerExecutionPlanSchema.parse({
+        provider: request.provider,
+        actionType: request.actionType,
+        appAlias: request.appAlias,
+        appId: app.appId,
+        version,
+        buildStrategy: request.buildStrategy,
+        previewCommands: [
+          versionLookup.displayCommand,
+          submissionStatus.displayCommand,
+          buildDisplayCommand(
+            this.binaryPath,
+            buildSubmitCancelArgs(resolvedVersion.versionId)
+          )
+        ],
+        validationSummary: summarizeSubmissionCancellationPlan({
+          version,
+          statusPayload: submissionStatus.json
+        }),
+        executionSummary: `Prepared cancellation of the App Store review submission for version ${version}.`,
+        rawProviderData: {
+          versionLookup: versionLookup.json,
+          versionId: resolvedVersion.versionId,
+          versionState: resolvedVersion.appStoreState,
+          submissionStatus: submissionStatus.json
         }
       });
     }
@@ -1213,6 +1300,35 @@ export class AppleAscProvider implements ProviderAdapter {
 
   public async execute(context: ExecuteRequestContext) {
     const version = requireVersion(context.request);
+
+    if (context.request.actionType === "cancel_review_submission") {
+      ensureWriteAction(context.request, context.plan);
+      const resolvedVersion = requireAppStoreVersionRecord(
+        (
+          await lookupAppStoreVersion({
+            binaryPath: this.binaryPath,
+            appId: context.app.appId,
+            version,
+            platform: context.app.platform,
+            env: this.env
+          })
+        ).versionRecord,
+        version,
+        context.app.platform
+      );
+      const cancel = await readProcessOutput(
+        this.binaryPath,
+        buildSubmitCancelArgs(resolvedVersion.versionId),
+        this.env
+      );
+
+      return providerExecutionResultSchema.parse({
+        ok: true,
+        summary: `Cancelled the App Store review submission for version ${version}.`,
+        rawResult: cancel.json
+      });
+    }
+
     ensureWriteAction(context.request, context.plan);
     const buildId = context.plan.buildId;
 

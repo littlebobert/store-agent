@@ -8,6 +8,7 @@ export const actionTypeSchema = z.enum([
   "validate_release",
   "prepare_release_for_review",
   "submit_release_for_review",
+  "cancel_review_submission",
   "release_status"
 ]);
 export type ActionType = z.infer<typeof actionTypeSchema>;
@@ -234,6 +235,7 @@ export function summarizeActionRequest(
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
+    cancel_review_submission: "Cancel review submission",
     release_status: "Check release status"
   }[request.actionType];
 
@@ -245,6 +247,7 @@ export function summarizeActionRequest(
 export function isWriteAction(actionType: ActionType): boolean {
   return (
     actionType === "prepare_release_for_review" ||
-    actionType === "submit_release_for_review"
+    actionType === "submit_release_for_review" ||
+    actionType === "cancel_review_submission"
   );
 }

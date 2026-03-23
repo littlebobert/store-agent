@@ -10,6 +10,7 @@ Implemented v1 action set:
 - `validate_release`
 - `prepare_release_for_review`
 - `submit_release_for_review`
+- `cancel_review_submission`
 - `release_status`
 
 ## Prerequisites
@@ -167,6 +168,7 @@ Example phrases:
 - `show release status for my-ios-app`
 - `tell me about the latest release for dotsu (jp.tech.kotoba.app) for iOS`
 - `show release status for jp.tech.kotoba.app`
+- `cancel the App Store review submission for dotsu version 1.3.8`
 
 The planner only returns a typed action plus the user-provided app reference. The actual `asc` commands are built by the Apple provider and shown back in Slack before approval.
 

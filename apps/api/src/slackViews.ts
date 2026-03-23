@@ -68,6 +68,7 @@ function formatActionType(actionType: NormalizedActionRequest["actionType"]): st
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
+    cancel_review_submission: "Cancel review submission",
     release_status: "Release status"
   }[actionType];
 }
@@ -209,6 +210,16 @@ export function buildApprovalBlocks(
     approvalId: input.approvalId,
     approvalToken: input.approvalToken
   });
+  const isCancellation = input.request.actionType === "cancel_review_submission";
+  const confirmButtonText = isCancellation
+    ? "Confirm cancellation"
+    : "Confirm release";
+  const confirmTitle = isCancellation ? "Cancel submission?" : "Submit release?";
+  const confirmBody = isCancellation
+    ? "This will queue the confirmed App Store Connect submission cancellation."
+    : "This will queue the confirmed App Store Connect write action.";
+  const confirmActionText = isCancellation ? "Cancel submission" : "Submit";
+  const summaryLabel = isCancellation ? "Submission summary" : "Validation summary";
 
   return [
     {
@@ -251,7 +262,7 @@ export function buildApprovalBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Validation summary*\n${truncateLines(input.plan.validationSummary)}`
+        text: `*${summaryLabel}*\n${truncateLines(input.plan.validationSummary)}`
       }
     },
     ...buildCommandBlocks(input.plan.previewCommands),
@@ -264,21 +275,21 @@ export function buildApprovalBlocks(
           style: "primary",
           text: {
             type: "plain_text",
-            text: "Confirm release"
+            text: confirmButtonText
           },
           value: buttonValue,
           confirm: {
             title: {
               type: "plain_text",
-              text: "Submit release?"
+              text: confirmTitle
             },
             text: {
               type: "mrkdwn",
-              text: "This will queue the confirmed App Store Connect write action."
+              text: confirmBody
             },
             confirm: {
               type: "plain_text",
-              text: "Submit"
+              text: confirmActionText
             },
             deny: {
               type: "plain_text",
@@ -307,6 +318,8 @@ export function buildReadOnlyBlocks(
   const summaryLabel =
     request.actionType === "release_status"
       ? "Status summary"
+      : request.actionType === "cancel_review_submission"
+        ? "Submission summary"
       : "Validation summary";
   const summaryLineCount = request.actionType === "release_status" ? 8 : 4;
 
