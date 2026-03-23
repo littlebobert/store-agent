@@ -59,12 +59,35 @@ SET display_name = EXCLUDED.display_name,
 
 INSERT INTO app_aliases (alias, provider, app_id, platform, metadata)
 VALUES
-  ('my-ios-app', 'apple', '123456789', 'IOS', '{}'::jsonb)
+  ('my-ios-app', 'apple', '123456789', 'IOS', '{"bundleId":"com.example.myapp"}'::jsonb)
 ON CONFLICT (alias) DO UPDATE
 SET provider = EXCLUDED.provider,
     app_id = EXCLUDED.app_id,
     platform = EXCLUDED.platform,
     metadata = EXCLUDED.metadata;
+```
+
+You can use `app_aliases.metadata` to let the bot resolve requests by bundle or package identifier as well as alias. Supported metadata keys:
+
+- `bundleId`
+- `bundleIds`
+- `packageName`
+- `packageNames`
+
+Examples:
+
+```sql
+UPDATE app_aliases
+SET metadata = '{"bundleId":"jp.tech.kotoba.app"}'::jsonb
+WHERE alias = 'dotsu';
+
+UPDATE app_aliases
+SET metadata = '{"bundleIds":["jp.tech.kotoba.app","jp.tech.kotoba.beta"]}'::jsonb
+WHERE alias = 'dotsu';
+
+UPDATE app_aliases
+SET metadata = '{"packageName":"com.example.android"}'::jsonb
+WHERE alias = 'my-android-app';
 ```
 
 6. Build the workspace:
@@ -135,15 +158,17 @@ The API and worker expect `asc` to run headlessly with:
 
 ## OpenAI Command Planning
 
-The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese, ask follow-up questions in a thread or DM, and revise a plan over multiple turns. It also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
+The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese, ask follow-up questions in a thread or DM, and revise a plan over multiple turns. OpenAI returns a structured request including an `appReference` such as an app alias, bundle ID, or package name. The backend then resolves that reference to the canonical configured app alias before it builds any `asc` commands. The bot also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
 
 Example phrases:
 
 - `submit the latest 1.3.7 TestFlight to Apple for public release`
 - `1.3.7 の最新 TestFlight ビルドを Apple の公開リリース審査に提出して`
 - `show release status for my-ios-app`
+- `tell me about the latest release for dotsu (jp.tech.kotoba.app) for iOS`
+- `show release status for jp.tech.kotoba.app`
 
-The planner only returns a typed action. The actual `asc` commands are built by the Apple provider and shown back in Slack before approval.
+The planner only returns a typed action plus the user-provided app reference. The actual `asc` commands are built by the Apple provider and shown back in Slack before approval.
 
 ## Azure Deployment
 

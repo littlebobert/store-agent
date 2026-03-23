@@ -46,7 +46,7 @@ export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
 const plannerOutputObjectSchema = z.object({
   provider: providerIdSchema,
   actionType: actionTypeSchema,
-  appAlias: z.string().trim().min(1).optional(),
+  appReference: z.string().trim().min(1).optional(),
   version: z.string().trim().min(1).optional(),
   buildStrategy: buildStrategySchema.default("latest_for_version"),
   explicitBuildId: z.string().trim().min(1).optional(),
@@ -100,22 +100,27 @@ export type PlannerOutput = z.infer<typeof plannerOutputSchema>;
 
 export const draftCommandInputSchema = z.object({
   rawCommand: z.string().trim().min(1),
-  appAliasOverride: z.string().trim().min(1).optional(),
+  appReferenceOverride: z.string().trim().min(1).optional(),
   versionOverride: z.string().trim().min(1).optional(),
   releaseModeOverride: releaseModeSchema.optional(),
   notesOverride: z.string().trim().max(2000).optional()
 });
 export type DraftCommandInput = z.infer<typeof draftCommandInputSchema>;
 
-export const normalizedActionRequestSchema = plannerOutputObjectSchema
+export const plannedActionRequestSchema = plannerOutputObjectSchema
   .omit({
     needsClarification: true,
     clarificationQuestion: true
   })
   .extend({
-    appAlias: z.string().trim().min(1),
+    appReference: z.string().trim().min(1),
     rawCommand: z.string().trim().min(1)
   });
+export type PlannedActionRequest = z.infer<typeof plannedActionRequestSchema>;
+
+export const normalizedActionRequestSchema = plannedActionRequestSchema.extend({
+  appAlias: z.string().trim().min(1)
+});
 export type NormalizedActionRequest = z.infer<
   typeof normalizedActionRequestSchema
 >;
@@ -167,17 +172,17 @@ export function mergePlannerOutputWithOverrides(
 ): PlannerOutput {
   return plannerOutputSchema.parse({
     ...plannerOutput,
-    appAlias: draft.appAliasOverride ?? plannerOutput.appAlias,
+    appReference: draft.appReferenceOverride ?? plannerOutput.appReference,
     version: draft.versionOverride ?? plannerOutput.version,
     releaseMode: draft.releaseModeOverride ?? plannerOutput.releaseMode,
     notes: draft.notesOverride ?? plannerOutput.notes
   });
 }
 
-export function finalizeNormalizedActionRequest(
+export function finalizePlannedActionRequest(
   draft: DraftCommandInput,
   plannerOutput: PlannerOutput
-): NormalizedActionRequest {
+): PlannedActionRequest {
   const merged = mergePlannerOutputWithOverrides(draft, plannerOutput);
 
   if (merged.needsClarification) {
@@ -187,16 +192,16 @@ export function finalizeNormalizedActionRequest(
     );
   }
 
-  return normalizedActionRequestSchema.parse({
+  return plannedActionRequestSchema.parse({
     ...merged,
     rawCommand: draft.rawCommand
   });
 }
 
-export function finalizeNormalizedActionRequestFromRawCommand(
+export function finalizePlannedActionRequestFromRawCommand(
   rawCommand: string,
   plannerOutput: PlannerOutput
-): NormalizedActionRequest {
+): PlannedActionRequest {
   if (plannerOutput.needsClarification) {
     throw new Error(
       plannerOutput.clarificationQuestion ??
@@ -204,14 +209,25 @@ export function finalizeNormalizedActionRequestFromRawCommand(
     );
   }
 
-  return normalizedActionRequestSchema.parse({
+  return plannedActionRequestSchema.parse({
     ...plannerOutput,
     rawCommand
   });
 }
 
+export function finalizeNormalizedActionRequest(
+  request: PlannedActionRequest,
+  appAlias: string
+): NormalizedActionRequest {
+  return normalizedActionRequestSchema.parse({
+    ...request,
+    appAlias
+  });
+}
+
 export function summarizeActionRequest(
-  request: NormalizedActionRequest
+  request: Pick<PlannedActionRequest, "actionType" | "provider" | "version" | "appReference"> &
+    Partial<Pick<NormalizedActionRequest, "appAlias">>
 ): string {
   const action = {
     resolve_latest_build: "Resolve latest build",
@@ -222,7 +238,8 @@ export function summarizeActionRequest(
   }[request.actionType];
 
   const versionPart = request.version ? `version ${request.version}` : "latest";
-  return `${action} for ${request.provider} app alias ${request.appAlias} (${versionPart})`;
+  const appLabel = request.appAlias ?? request.appReference;
+  return `${action} for ${request.provider} app ${appLabel} (${versionPart})`;
 }
 
 export function isWriteAction(actionType: ActionType): boolean {

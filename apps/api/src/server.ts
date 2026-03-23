@@ -5,10 +5,13 @@ import { once } from "node:events";
 
 import SlackBolt from "@slack/bolt";
 import {
+  type AppAliasRecord,
   type ConversationMessage,
   type ConversationSessionRecord,
+  finalizeNormalizedActionRequest,
   type NormalizedActionRequest,
   type OpenAiErrorSummary,
+  type PlannedActionRequest,
   type ProviderExecutionPlan,
   canCancelApproval,
   hashApprovalToken,
@@ -108,6 +111,57 @@ function buildConversationContextSummary(
   plan: ProviderExecutionPlan
 ): string {
   return `${summarizeActionRequest(request)}. ${plan.executionSummary}`;
+}
+
+async function resolveConfiguredApp(
+  store: PostgresStore,
+  request: PlannedActionRequest
+): Promise<{
+  appAlias: AppAliasRecord;
+  normalizedRequest: NormalizedActionRequest;
+}> {
+  const directMatch = await store.getAppAlias(request.appReference);
+  if (directMatch && directMatch.provider === request.provider) {
+    return {
+      appAlias: directMatch,
+      normalizedRequest: finalizeNormalizedActionRequest(
+        request,
+        directMatch.alias
+      )
+    };
+  }
+
+  const identifierMatches = await store.findAppAliasesByMetadataIdentifier(
+    request.provider,
+    request.appReference
+  );
+
+  if (identifierMatches.length === 1) {
+    const resolvedAppAlias = identifierMatches[0];
+    return {
+      appAlias: resolvedAppAlias,
+      normalizedRequest: finalizeNormalizedActionRequest(
+        request,
+        resolvedAppAlias.alias
+      )
+    };
+  }
+
+  if (identifierMatches.length > 1) {
+    throw new Error(
+      `The app reference "${request.appReference}" matched multiple configured ${request.provider} apps: ${identifierMatches.map((match) => match.alias).join(", ")}. Use the exact app alias.`
+    );
+  }
+
+  if (directMatch) {
+    throw new Error(
+      `The app reference ${request.appReference} is registered for ${directMatch.provider}, not ${request.provider}.`
+    );
+  }
+
+  throw new Error(
+    `The app reference "${request.appReference}" could not be resolved to a configured ${request.provider} app alias or metadata identifier.`
+  );
 }
 
 function isDirectMessageChannelId(channelId: string): boolean {
@@ -353,7 +407,7 @@ async function main(): Promise<void> {
         previousRequest: session.lastNormalizedRequest
       });
 
-      if (!turn.normalizedRequest) {
+      if (!turn.plannedRequest) {
         session = await saveConversationSession({
           existingSession: session,
           teamId: session.teamId,
@@ -379,20 +433,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      normalizedRequest = turn.normalizedRequest;
-
-      const appAlias = await store.getAppAlias(normalizedRequest.appAlias);
-      if (!appAlias) {
-        throw new Error(
-          `No app alias named ${normalizedRequest.appAlias} exists in the database.`
-        );
-      }
-
-      if (appAlias.provider !== normalizedRequest.provider) {
-        throw new Error(
-          `The app alias ${normalizedRequest.appAlias} is registered for ${appAlias.provider}, not ${normalizedRequest.provider}.`
-        );
-      }
+      const resolvedApp = await resolveConfiguredApp(store, turn.plannedRequest);
+      normalizedRequest = resolvedApp.normalizedRequest;
+      const appAlias = resolvedApp.appAlias;
 
       const provider = providers.get(normalizedRequest.provider);
       executionPlan = await provider.resolve({

@@ -241,6 +241,52 @@ function mapAppAlias(row: Record<string, unknown>): AppAliasRecord {
   };
 }
 
+function normalizeAppMetadataIdentifier(value: string): string | undefined {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function addMetadataIdentifierValues(
+  target: Set<string>,
+  value: unknown
+): void {
+  if (typeof value === "string") {
+    const normalized = normalizeAppMetadataIdentifier(value);
+    if (normalized) {
+      target.add(normalized);
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      addMetadataIdentifierValues(target, item);
+    }
+  }
+}
+
+function collectAppAliasMetadataIdentifiers(
+  metadata: Record<string, unknown>
+): string[] {
+  const identifiers = new Set<string>();
+
+  for (const key of [
+    "bundleId",
+    "packageName",
+    "bundleIds",
+    "packageNames",
+    "bundleIdentifier",
+    "packageIdentifier",
+    "bundleIdentifiers",
+    "packageIdentifiers",
+    "identifiers"
+  ]) {
+    addMetadataIdentifierValues(identifiers, metadata[key]);
+  }
+
+  return [...identifiers];
+}
+
 function mapSlackUser(row: Record<string, unknown>): StoredSlackUser {
   return {
     slackUserId: String(row.slack_user_id),
@@ -387,6 +433,29 @@ export class PostgresStore {
     }
 
     return mapAppAlias(result.rows[0] as Record<string, unknown>);
+  }
+
+  public async findAppAliasesByMetadataIdentifier(
+    provider: ProviderId,
+    identifier: string
+  ): Promise<AppAliasRecord[]> {
+    const normalizedIdentifier = normalizeAppMetadataIdentifier(identifier);
+    if (!normalizedIdentifier) {
+      return [];
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM app_aliases WHERE provider = $1`,
+      [provider]
+    );
+
+    return result.rows
+      .map((row) => mapAppAlias(row as Record<string, unknown>))
+      .filter((appAlias) =>
+        collectAppAliasMetadataIdentifiers(appAlias.metadata).includes(
+          normalizedIdentifier
+        )
+      );
   }
 
   public async upsertSlackUser(

@@ -4,10 +4,11 @@ import { z } from "zod";
 import {
   type ConversationMessage,
   type DraftCommandInput,
-  finalizeNormalizedActionRequest,
-  finalizeNormalizedActionRequestFromRawCommand,
+  finalizePlannedActionRequest,
+  finalizePlannedActionRequestFromRawCommand,
   plannerOutputSchema,
   type PlannerOutput,
+  type PlannedActionRequest,
   type NormalizedActionRequest
 } from "./actions.js";
 
@@ -55,7 +56,7 @@ const conversationPlannerResponseSchema = z
 
 export interface OpenAiConversationTurnResult {
   assistantReply: string;
-  normalizedRequest: NormalizedActionRequest | null;
+  plannedRequest: PlannedActionRequest | null;
 }
 
 function extractJsonPayload(content: string): string {
@@ -159,6 +160,15 @@ function extractVersionFromText(text: string): string | undefined {
   return undefined;
 }
 
+function normalizeAppReference(value: string): string | undefined {
+  const trimmed = value
+    .trim()
+    .replace(/^[\s"'`([{<]+/, "")
+    .replace(/[\s"'`)\]}>.,:;!?]+$/, "");
+
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function normalizePlannerOutput(
   value: unknown,
   input: {
@@ -178,6 +188,7 @@ function normalizePlannerOutput(
   }
 
   const record = { ...(normalized as Record<string, unknown>) };
+  const appReference = record.appReference ?? record.appAlias;
   const version = record.version;
   const releaseNotes = record.releaseNotes;
 
@@ -185,7 +196,7 @@ function normalizePlannerOutput(
     for (const key of [
       "provider",
       "actionType",
-      "appAlias",
+      "appReference",
       "version",
       "buildStrategy",
       "explicitBuildId",
@@ -198,6 +209,39 @@ function normalizePlannerOutput(
         record[key] = input.previousRequest[key];
       }
     }
+  }
+
+  if (typeof appReference !== "string") {
+    const extractedAppReference = extractFirstMeaningfulString(appReference, [
+      "appReference",
+      "appAlias",
+      "alias",
+      "app",
+      "identifier",
+      "bundleId",
+      "packageName",
+      "value",
+      "name"
+    ]);
+
+    if (extractedAppReference) {
+      record.appReference =
+        normalizeAppReference(extractedAppReference) ?? extractedAppReference;
+    }
+  }
+
+  if (typeof record.appReference === "string") {
+    const normalizedReference = normalizeAppReference(record.appReference);
+    if (normalizedReference) {
+      record.appReference = normalizedReference;
+    }
+  }
+
+  if (
+    typeof record.appReference !== "string" &&
+    typeof input.previousRequest?.appAlias === "string"
+  ) {
+    record.appReference = input.previousRequest.appAlias;
   }
 
   if (typeof version !== "string") {
@@ -312,7 +356,7 @@ export class OpenAiCommandPlanner {
 
   public async parseCommand(
     draft: DraftCommandInput
-  ): Promise<NormalizedActionRequest> {
+  ): Promise<PlannedActionRequest> {
     const completion = await this.client.chat.completions.create({
       model: this.model,
       temperature: 0,
@@ -329,6 +373,9 @@ export class OpenAiCommandPlanner {
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
+            "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
+            "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
+            "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Extract releaseNotes when the user provides release notes or 'what's new' text.",
             "releaseNotes must always be a single plain string with the operator's source text.",
@@ -345,7 +392,7 @@ export class OpenAiCommandPlanner {
           role: "user",
           content: JSON.stringify({
             rawCommand: draft.rawCommand,
-            appAliasOverride: draft.appAliasOverride ?? null,
+            appReferenceOverride: draft.appReferenceOverride ?? null,
             versionOverride: draft.versionOverride ?? null,
             releaseModeOverride: draft.releaseModeOverride ?? null,
             notesOverride: draft.notesOverride ?? null
@@ -364,7 +411,7 @@ export class OpenAiCommandPlanner {
       versionOverride: draft.versionOverride
     });
 
-    return finalizeNormalizedActionRequest(draft, parsed);
+    return finalizePlannedActionRequest(draft, parsed);
   }
 
   public async planConversationTurn(input: {
@@ -386,12 +433,19 @@ export class OpenAiCommandPlanner {
             "Supported actionType values: resolve_latest_build, validate_release, prepare_release_for_review, submit_release_for_review, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
+            "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
+            "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
+            "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Extract releaseNotes when the user provides release notes or 'what's new' text.",
             "releaseNotes must always be a single plain string with the operator's source text.",
             "Never return releaseNotes as an object, array, locale map, or translated bundle.",
             "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
+            "Use prepare_release_for_review when the user wants to create or ensure an App Store version, apply release notes/localizations or metadata, attach a build, and submit in one workflow.",
+            "Use submit_release_for_review for requests about sending an already prepared version/build to Apple review or public App Store release.",
+            "Treat direct requests phrased like 'can you ...' as instructions, not as ambiguity.",
             "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
+            "If all required details are already present, do not ask the user to confirm your interpretation. Set readyToResolve to true.",
             "If you have enough information, set readyToResolve to true, assistantReply to a short confirmation sentence, and plannerOutput to a complete self-contained request object.",
             "When readyToResolve is true, plannerOutput must include every required field needed for the selected action, not just changed fields.",
             "Never invent app IDs or build IDs.",
@@ -422,7 +476,7 @@ export class OpenAiCommandPlanner {
     if (!parsed.readyToResolve || !parsed.plannerOutput) {
       return {
         assistantReply: parsed.assistantReply,
-        normalizedRequest: null
+        plannedRequest: null
       };
     }
 
@@ -433,7 +487,7 @@ export class OpenAiCommandPlanner {
 
     return {
       assistantReply: parsed.assistantReply,
-      normalizedRequest: finalizeNormalizedActionRequestFromRawCommand(
+      plannedRequest: finalizePlannedActionRequestFromRawCommand(
         rawCommand,
         plannerOutput
       )
