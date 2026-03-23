@@ -352,6 +352,12 @@ function extractAttachedBuildId(payload: Record<string, unknown>): string | null
   return null;
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function summarizeValidation(payload: Record<string, unknown>): string[] {
   const record = asRecord(payload);
   if (!record) {
@@ -661,6 +667,37 @@ async function lookupAppStoreVersion(input: {
   };
 }
 
+async function waitForAppStoreVersion(input: {
+  binaryPath: string;
+  appId: string;
+  version: string;
+  platform: string;
+  env: NodeJS.ProcessEnv;
+  attempts?: number;
+  delayMs?: number;
+}): Promise<{
+  lookup: AscCommandResult;
+  versionRecord: AppStoreVersionRecord | null;
+}> {
+  const attempts = input.attempts ?? 6;
+  const delayMs = input.delayMs ?? 2000;
+
+  let latest = await lookupAppStoreVersion(input);
+  if (latest.versionRecord) {
+    return latest;
+  }
+
+  for (let attempt = 1; attempt < attempts; attempt += 1) {
+    await sleep(delayMs);
+    latest = await lookupAppStoreVersion(input);
+    if (latest.versionRecord) {
+      return latest;
+    }
+  }
+
+  return latest;
+}
+
 async function ensureAppStoreVersion(input: {
   binaryPath: string;
   appId: string;
@@ -700,8 +737,19 @@ async function ensureAppStoreVersion(input: {
     ),
     input.env
   );
-  const versionRecord = requireAppStoreVersionRecord(
-    findAppStoreVersionRecord(create.json, input.version),
+  const versionRecord =
+    findAppStoreVersionRecord(create.json, input.version) ??
+    (
+      await waitForAppStoreVersion({
+        binaryPath: input.binaryPath,
+        appId: input.appId,
+        version: input.version,
+        platform: input.platform,
+        env: input.env
+      })
+    ).versionRecord;
+  const resolvedVersionRecord = requireAppStoreVersionRecord(
+    versionRecord,
     input.version,
     input.platform
   );
@@ -709,7 +757,7 @@ async function ensureAppStoreVersion(input: {
   return {
     lookup: existing.lookup,
     create,
-    versionRecord,
+    versionRecord: resolvedVersionRecord,
     created: true
   };
 }

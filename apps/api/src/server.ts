@@ -332,6 +332,13 @@ async function main(): Promise<void> {
     });
   }
 
+  async function discardConversationSession(
+    session: ConversationSessionRecord
+  ): Promise<void> {
+    await store.cancelPendingApprovalsForConversationSession(session.sessionId);
+    await store.deleteConversationSession(session.sessionId);
+  }
+
   async function processConversationTurn(input: {
     client: SlackChatClient;
     teamId: string;
@@ -354,25 +361,30 @@ async function main(): Promise<void> {
     let executionPlan: ProviderExecutionPlan | null = null;
 
     try {
-      session = input.resetSession
-        ? null
-        : await store.getConversationSession(
-            input.teamId,
-            input.channelId,
-            input.threadTs
-          );
+      const existingSession = await store.getConversationSession(
+        input.teamId,
+        input.channelId,
+        input.threadTs
+      );
 
-      if (session && session.ownerSlackUserId !== input.userId) {
+      if (existingSession && existingSession.ownerSlackUserId !== input.userId) {
         if (input.respondOnOwnershipConflict) {
           await postConversationMessage(input.client, target, {
-            text: `This conversation belongs to <@${session.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`,
+            text: `This conversation belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`,
             blocks: buildConversationMessageBlocks(
               "Conversation already in progress",
-              `This thread belongs to <@${session.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`
+              `This thread belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`
             )
           });
         }
         return;
+      }
+
+      if (input.resetSession && existingSession) {
+        await discardConversationSession(existingSession);
+        session = null;
+      } else {
+        session = existingSession;
       }
 
       if (!session && !input.allowCreate && !input.resetSession) {
@@ -622,6 +634,14 @@ async function main(): Promise<void> {
         if (initialText.length === 0) {
           const intro =
             "Reply here with a release request in English or Japanese. I’ll plan the exact asc steps, ask follow-up questions if needed, and show the final commands before any write action runs.";
+
+          const existingSession = await store.getConversationSession(
+            teamId,
+            body.channel_id
+          );
+          if (existingSession) {
+            await discardConversationSession(existingSession);
+          }
 
           await saveConversationSession({
             teamId,

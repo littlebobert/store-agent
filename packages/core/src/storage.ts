@@ -521,6 +521,16 @@ export class PostgresStore {
     return mapConversationSession(result.rows[0] as Record<string, unknown>);
   }
 
+  public async deleteConversationSession(sessionId: string): Promise<void> {
+    await this.pool.query(
+      `
+        DELETE FROM slack_conversation_sessions
+        WHERE session_id = $1
+      `,
+      [sessionId]
+    );
+  }
+
   public async upsertConversationSession(
     input: UpsertConversationSessionInput
   ): Promise<ConversationSessionRecord> {
