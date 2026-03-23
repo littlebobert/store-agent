@@ -27,6 +27,13 @@ const errorSummarySchema = z.object({
 });
 export type OpenAiErrorSummary = z.infer<typeof errorSummarySchema>;
 
+const localizedReleaseNotesSchema = z.object({
+  translations: z.record(z.string(), z.string().trim().min(1))
+});
+export type OpenAiLocalizedReleaseNotes = z.infer<
+  typeof localizedReleaseNotesSchema
+>;
+
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
@@ -94,11 +101,13 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese mobile release requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: resolve_latest_build, validate_release, submit_release_for_review, release_status.",
+            "Supported actionType values: resolve_latest_build, validate_release, prepare_release_for_review, submit_release_for_review, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
+            "Extract releaseNotes when the user provides release notes or 'what's new' text.",
+            "Use prepare_release_for_review when the user wants to create or ensure an App Store version, apply release notes/localizations or metadata, attach a build, and submit in one workflow.",
             "Use submit_release_for_review for requests about sending a build to Apple review or public App Store release.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
             "Omit unknown optional fields instead of returning null.",
@@ -234,5 +243,67 @@ export class OpenAiErrorSummarizer {
     }
 
     return errorSummarySchema.parse(JSON.parse(extractJsonPayload(content)));
+  }
+}
+
+export class OpenAiReleaseNotesTranslator {
+  private readonly client: OpenAI;
+
+  private readonly model: string;
+
+  public constructor(options: OpenAiCommandPlannerOptions) {
+    this.client = new OpenAI({ apiKey: options.apiKey });
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+  }
+
+  public async translateReleaseNotes(input: {
+    baseNotes: string;
+    locales: string[];
+  }): Promise<Record<string, string>> {
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You localize App Store release notes for multiple locales.",
+            "Return JSON only with key translations.",
+            "translations must be an object keyed by the exact locale codes provided by the user.",
+            "Every requested locale must be present exactly once.",
+            "Keep the tone concise, release-note appropriate, and faithful to the original.",
+            "Do not add Markdown, bullets, or extra commentary unless they already exist in the source text.",
+            "If the source text is already appropriate for a locale, you may keep it with light localization."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            baseNotes: input.baseNotes,
+            locales: input.locales
+          })
+        }
+      ]
+    });
+
+    const content = completion.choices[0]?.message.content;
+    if (!content) {
+      throw new Error("OpenAI did not return localized release notes.");
+    }
+
+    const parsed = localizedReleaseNotesSchema.parse(
+      JSON.parse(extractJsonPayload(content))
+    );
+
+    for (const locale of input.locales) {
+      if (!parsed.translations[locale]) {
+        throw new Error(
+          `OpenAI did not provide release notes for locale ${locale}.`
+        );
+      }
+    }
+
+    return parsed.translations;
   }
 }

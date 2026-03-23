@@ -141,7 +141,9 @@ async function main(): Promise<void> {
   const providers = new ProviderRegistry({
     apple: {
       binaryPath: config.ASC_PATH,
-      env: process.env
+      env: process.env,
+      openAiApiKey: config.OPENAI_API_KEY,
+      openAiModel: config.OPENAI_MODEL
     }
   });
   const queue = new ReleaseQueuePublisher(

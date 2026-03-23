@@ -22,6 +22,16 @@ function truncateLines(lines: string[], maxLines = 4): string {
   return lines.slice(0, maxLines).join("\n");
 }
 
+function formatActionType(actionType: NormalizedActionRequest["actionType"]): string {
+  return {
+    resolve_latest_build: "Resolve latest build",
+    validate_release: "Validate release",
+    prepare_release_for_review: "Prepare release for review",
+    submit_release_for_review: "Submit release for review",
+    release_status: "Release status"
+  }[actionType];
+}
+
 export function buildRequestModal(
   commandName: string,
   metadata: ModalMetadata,
@@ -177,7 +187,7 @@ export function buildApprovalBlocks(
         },
         {
           type: "mrkdwn",
-          text: `*Action*\n${input.request.actionType}`
+          text: `*Action*\n${formatActionType(input.request.actionType)}`
         },
         {
           type: "mrkdwn",
@@ -271,7 +281,7 @@ export function buildReadOnlyBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${request.actionType}*\n${plan.executionSummary}`
+        text: `*${formatActionType(request.actionType)}*\n${plan.executionSummary}`
       }
     },
     {

@@ -6,6 +6,7 @@ export type ProviderId = z.infer<typeof providerIdSchema>;
 export const actionTypeSchema = z.enum([
   "resolve_latest_build",
   "validate_release",
+  "prepare_release_for_review",
   "submit_release_for_review",
   "release_status"
 ]);
@@ -39,6 +40,7 @@ const plannerOutputObjectSchema = z.object({
   buildStrategy: buildStrategySchema.default("latest_for_version"),
   explicitBuildId: z.string().trim().min(1).optional(),
   releaseMode: releaseModeSchema.default("manual_after_review"),
+  releaseNotes: z.string().trim().min(1).max(4000).optional(),
   notes: z.string().trim().max(2000).optional(),
   commandLanguage: commandLanguageSchema.default("unknown"),
   needsClarification: z.boolean().default(false),
@@ -67,6 +69,18 @@ export const plannerOutputSchema = plannerOutputObjectSchema.superRefine(
         code: z.ZodIssueCode.custom,
         path: ["explicitBuildId"],
         message: "Explicit build ID is required when buildStrategy is explicit."
+      });
+    }
+
+    if (
+      value.actionType === "prepare_release_for_review" &&
+      !value.releaseNotes
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["releaseNotes"],
+        message:
+          "Release notes are required when preparing a release workflow."
       });
     }
   }
@@ -174,6 +188,7 @@ export function summarizeActionRequest(
   const action = {
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
+    prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
     release_status: "Check release status"
   }[request.actionType];
@@ -183,5 +198,8 @@ export function summarizeActionRequest(
 }
 
 export function isWriteAction(actionType: ActionType): boolean {
-  return actionType === "submit_release_for_review";
+  return (
+    actionType === "prepare_release_for_review" ||
+    actionType === "submit_release_for_review"
+  );
 }
