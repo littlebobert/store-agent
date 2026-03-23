@@ -513,17 +513,18 @@ function buildVersionGetArgs(versionId: string): string[] {
   ];
 }
 
-function buildAppInfoLocalizationsListArgs(appId: string): string[] {
-  return [
-    "localizations",
-    "list",
-    "--app",
-    appId,
-    "--type",
-    "app-info",
-    "--output",
-    "json"
-  ];
+function buildAppInfoGetArgs(input: {
+  appId: string;
+  versionId?: string;
+}): string[] {
+  const args = ["app-info", "get"];
+  if (input.versionId) {
+    args.push("--version-id", input.versionId);
+  } else {
+    args.push("--app", input.appId);
+  }
+  args.push("--paginate", "--output", "json");
+  return args;
 }
 
 function buildLocalizationsUploadArgs(
@@ -1060,12 +1061,15 @@ export class AppleAscProvider implements ProviderAdapter {
         env: this.env
       });
 
-      const appInfoLocalizations = await readProcessOutput(
+      const appInfoMetadata = await readProcessOutput(
         this.binaryPath,
-        buildAppInfoLocalizationsListArgs(app.appId),
+        buildAppInfoGetArgs({
+          appId: app.appId,
+          versionId: versionRecord?.versionId
+        }),
         this.env
       );
-      const locales = extractLocales(appInfoLocalizations.json);
+      const locales = extractLocales(appInfoMetadata.json);
       const localizedReleaseNotes =
         await this.releaseNotesTranslator.translateReleaseNotes({
           baseNotes: releaseNotes,
@@ -1102,7 +1106,7 @@ export class AppleAscProvider implements ProviderAdapter {
       const previewCommands = [
         latestBuild.displayCommand,
         versionLookup.displayCommand,
-        appInfoLocalizations.displayCommand
+        appInfoMetadata.displayCommand
       ];
       if (!versionRecord) {
         previewCommands.push(
@@ -1182,7 +1186,7 @@ export class AppleAscProvider implements ProviderAdapter {
           versionId: versionRecord?.versionId,
           versionState: versionRecord?.appStoreState,
           versionDetails: versionDetails?.json,
-          appInfoLocalizations: appInfoLocalizations.json,
+          appInfoMetadata: appInfoMetadata.json,
           localizationsDryRun: localizationsDryRun?.json,
           attachedBuildId,
           localizedReleaseNotes,
