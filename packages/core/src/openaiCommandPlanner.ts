@@ -69,6 +69,108 @@ function replaceNullsWithUndefined(value: unknown): unknown {
   return value;
 }
 
+function extractFirstMeaningfulString(
+  value: unknown,
+  preferredKeys: string[] = []
+): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const extracted = extractFirstMeaningfulString(item, preferredKeys);
+      if (extracted) {
+        return extracted;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+
+    for (const key of preferredKeys) {
+      if (key in record) {
+        const extracted = extractFirstMeaningfulString(record[key], preferredKeys);
+        if (extracted) {
+          return extracted;
+        }
+      }
+    }
+
+    for (const key of Object.keys(record).sort()) {
+      const extracted = extractFirstMeaningfulString(record[key], preferredKeys);
+      if (extracted) {
+        return extracted;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function normalizePlannerOutput(value: unknown): unknown {
+  const normalized = replaceNullsWithUndefined(value);
+
+  if (
+    normalized === null ||
+    typeof normalized !== "object" ||
+    Array.isArray(normalized)
+  ) {
+    return normalized;
+  }
+
+  const record = { ...(normalized as Record<string, unknown>) };
+  const releaseNotes = record.releaseNotes;
+
+  if (typeof releaseNotes !== "string") {
+    const extractedReleaseNotes = extractFirstMeaningfulString(releaseNotes, [
+      "source",
+      "text",
+      "value",
+      "default",
+      "base",
+      "original",
+      "en-US",
+      "en_US",
+      "en",
+      "ja"
+    ]);
+
+    if (extractedReleaseNotes) {
+      record.releaseNotes = extractedReleaseNotes;
+    }
+  }
+
+  if (typeof record.releaseNotes !== "string" && typeof record.notes !== "string") {
+    const extractedNotes = extractFirstMeaningfulString(record.notes, [
+      "source",
+      "text",
+      "value",
+      "default",
+      "base",
+      "original"
+    ]);
+
+    if (extractedNotes) {
+      record.notes = extractedNotes;
+    }
+  }
+
+  if (
+    typeof record.releaseNotes !== "string" &&
+    record.actionType === "prepare_release_for_review" &&
+    typeof record.notes === "string"
+  ) {
+    record.releaseNotes = record.notes;
+  }
+
+  return record;
+}
+
 function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) {
     return content;
@@ -107,6 +209,9 @@ export class OpenAiCommandPlanner {
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
             "Extract releaseNotes when the user provides release notes or 'what's new' text.",
+            "releaseNotes must always be a single plain string with the operator's source text.",
+            "Never return releaseNotes as an object, array, locale map, or translated bundle.",
+            "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
             "Use prepare_release_for_review when the user wants to create or ensure an App Store version, apply release notes/localizations or metadata, attach a build, and submit in one workflow.",
             "Use submit_release_for_review for requests about sending a build to Apple review or public App Store release.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
@@ -133,7 +238,7 @@ export class OpenAiCommandPlanner {
     }
 
     const parsed = plannerOutputSchema.parse(
-      replaceNullsWithUndefined(JSON.parse(extractJsonPayload(content)))
+              normalizePlannerOutput(JSON.parse(extractJsonPayload(content)))
     );
 
     return finalizeNormalizedActionRequest(draft, parsed);
