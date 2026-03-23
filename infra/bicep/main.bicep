@@ -486,6 +486,11 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           identity: workerIdentity.id
         }
         {
+          name: 'openai-api-key'
+          keyVaultUrl: openAiApiKeySecret.properties.secretUriWithVersion
+          identity: workerIdentity.id
+        }
+        {
           name: 'asc-key-id'
           keyVaultUrl: ascKeyIdSecret.properties.secretUriWithVersion
           identity: workerIdentity.id
@@ -555,6 +560,14 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'SERVICE_BUS_QUEUE_NAME'
               value: serviceBusQueueName
+            }
+            {
+              name: 'OPENAI_API_KEY'
+              secretRef: 'openai-api-key'
+            }
+            {
+              name: 'OPENAI_MODEL'
+              value: openAiModel
             }
             {
               name: 'ASC_PATH'

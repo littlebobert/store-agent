@@ -15,6 +15,8 @@ function toErrorMessage(error: unknown): string {
 interface ReleaseExecutorOptions {
   slackBotToken: string;
   ascPath?: string;
+  openAiApiKey?: string;
+  openAiModel?: string;
 }
 
 export class ReleaseExecutor {
@@ -30,7 +32,9 @@ export class ReleaseExecutor {
     this.providers = new ProviderRegistry({
       apple: {
         binaryPath: options.ascPath,
-        env: process.env
+        env: process.env,
+        openAiApiKey: options.openAiApiKey,
+        openAiModel: options.openAiModel
       }
     });
   }

@@ -11,7 +11,9 @@ async function main(): Promise<void> {
   const store = new PostgresStore(config.DATABASE_URL);
   const executor = new ReleaseExecutor(store, {
     slackBotToken: config.SLACK_BOT_TOKEN,
-    ascPath: config.ASC_PATH
+    ascPath: config.ASC_PATH,
+    openAiApiKey: config.OPENAI_API_KEY,
+    openAiModel: config.OPENAI_MODEL
   });
 
   try {
