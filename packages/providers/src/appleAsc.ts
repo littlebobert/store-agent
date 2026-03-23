@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -40,6 +40,12 @@ interface ScalarEntry {
 
 interface LocalizedReleaseNotes {
   [locale: string]: string;
+}
+
+interface AppStoreVersionRecord {
+  versionId: string;
+  versionString: string;
+  appStoreState?: string;
 }
 
 function quoteArg(arg: string): string {
@@ -263,6 +269,89 @@ function extractBuildDetails(payload: Record<string, unknown>): {
   return { buildId, buildNumber };
 }
 
+function extractAppStoreVersionRecords(
+  payload: Record<string, unknown>
+): AppStoreVersionRecord[] {
+  const rawData = readPath(payload, "data");
+  const singleRecord = asRecord(rawData);
+  const records = Array.isArray(rawData)
+    ? rawData
+        .map((value) => asRecord(value))
+        .filter((value): value is Record<string, unknown> => value !== null)
+    : singleRecord
+      ? [singleRecord]
+      : [];
+
+  return records
+    .map<AppStoreVersionRecord | null>((record) => {
+      const versionId = findFirstString(record, ["id"]) ?? "";
+      if (!versionId) {
+        return null;
+      }
+
+      const versionString =
+        findFirstString(record, [
+          "attributes.versionString",
+          "attributes.version",
+          "versionString",
+          "version"
+        ]) ?? "";
+      const appStoreState = findFirstString(record, [
+        "attributes.appStoreState",
+        "attributes.appStoreVersionState",
+        "attributes.state",
+        "appStoreState",
+        "state"
+      ]);
+
+      return appStoreState
+        ? { versionId, versionString, appStoreState }
+        : { versionId, versionString };
+    })
+    .filter((record): record is AppStoreVersionRecord => record !== null);
+}
+
+function findAppStoreVersionRecord(
+  payload: Record<string, unknown>,
+  version: string
+): AppStoreVersionRecord | null {
+  const records = extractAppStoreVersionRecords(payload);
+  return (
+    records.find((record) => record.versionString === version) ?? records[0] ?? null
+  );
+}
+
+function extractAttachedBuildId(payload: Record<string, unknown>): string | null {
+  const explicit =
+    findFirstString(payload, [
+      "data.relationships.build.data.id",
+      "relationships.build.data.id",
+      "data.relationships.builds.data.0.id",
+      "relationships.builds.data.0.id"
+    ]) ?? null;
+  if (explicit) {
+    return explicit;
+  }
+
+  const included = readPath(payload, "included");
+  if (!Array.isArray(included)) {
+    return null;
+  }
+
+  for (const item of included) {
+    const record = asRecord(item);
+    if (
+      record?.type === "builds" &&
+      typeof record.id === "string" &&
+      record.id.length > 0
+    ) {
+      return record.id;
+    }
+  }
+
+  return null;
+}
+
 function summarizeValidation(payload: Record<string, unknown>): string[] {
   const record = asRecord(payload);
   if (!record) {
@@ -321,84 +410,331 @@ function requireReleaseNotes(request: NormalizedActionRequest): string {
   return request.releaseNotes;
 }
 
-function buildReleaseRunDisplayCommand(
-  binaryPath: string,
-  appId: string,
-  version: string,
-  buildId: string,
-  mode: "dry-run" | "confirm"
-): string {
-  return buildDisplayCommand(binaryPath, [
-    "release",
-    "run",
-    "--app",
-    appId,
-    "--version",
-    version,
-    "--build",
-    buildId,
-    "--metadata-dir",
-    "<generated-metadata-dir>",
-    mode === "dry-run" ? "--dry-run" : "--confirm",
-    "--output",
-    "json"
-  ]);
+function formatPlatformLabel(platform: string): string {
+  return (
+    {
+      IOS: "iOS",
+      MAC_OS: "macOS",
+      TV_OS: "tvOS",
+      VISION_OS: "visionOS"
+    }[platform] ?? platform
+  );
 }
 
-function buildReleaseRunArgs(
+function buildMissingVersionError(version: string, platform: string): Error {
+  return new Error(
+    `App Store Connect has no App Store version ${version} for the ${formatPlatformLabel(platform)} app.`
+  );
+}
+
+function requireAppStoreVersionRecord(
+  versionRecord: AppStoreVersionRecord | null,
+  version: string,
+  platform: string
+): AppStoreVersionRecord {
+  if (!versionRecord) {
+    throw buildMissingVersionError(version, platform);
+  }
+
+  return versionRecord;
+}
+
+function mapReleaseModeToAscReleaseType(
+  releaseMode?: NormalizedActionRequest["releaseMode"]
+): string | null {
+  switch (releaseMode) {
+    case "manual_after_review":
+      return "MANUAL";
+    case "automatic_on_approval":
+      return "AFTER_APPROVAL";
+    default:
+      return null;
+  }
+}
+
+function buildVersionLookupArgs(
   appId: string,
   version: string,
-  buildId: string,
-  metadataDir: string,
-  mode: "dry-run" | "confirm"
+  platform: string
 ): string[] {
   return [
-    "release",
-    "run",
+    "versions",
+    "list",
     "--app",
     appId,
     "--version",
     version,
-    "--build",
-    buildId,
-    "--metadata-dir",
-    metadataDir,
-    mode === "dry-run" ? "--dry-run" : "--confirm",
+    "--platform",
+    platform,
     "--output",
     "json"
   ];
 }
 
-async function withReleaseMetadataDir<T>(
+function buildVersionCreateArgs(
+  appId: string,
+  version: string,
+  platform: string,
+  releaseMode?: NormalizedActionRequest["releaseMode"]
+): string[] {
+  const args = [
+    "versions",
+    "create",
+    "--app",
+    appId,
+    "--version",
+    version,
+    "--platform",
+    platform
+  ];
+  const releaseType = mapReleaseModeToAscReleaseType(releaseMode);
+  if (releaseType) {
+    args.push("--release-type", releaseType);
+  }
+  args.push("--output", "json");
+  return args;
+}
+
+function buildVersionGetArgs(versionId: string): string[] {
+  return [
+    "versions",
+    "get",
+    "--version-id",
+    versionId,
+    "--include-build",
+    "--output",
+    "json"
+  ];
+}
+
+function buildAppInfoLocalizationsListArgs(appId: string): string[] {
+  return [
+    "localizations",
+    "list",
+    "--app",
+    appId,
+    "--type",
+    "app-info",
+    "--output",
+    "json"
+  ];
+}
+
+function buildLocalizationsUploadArgs(
+  versionId: string,
+  inputPath: string,
+  mode: "dry-run" | "upload"
+): string[] {
+  const args = [
+    "localizations",
+    "upload",
+    "--version",
+    versionId,
+    "--path",
+    inputPath
+  ];
+  if (mode === "dry-run") {
+    args.push("--dry-run");
+  }
+  args.push("--output", "json");
+  return args;
+}
+
+function buildLocalizationsUploadDisplayCommand(
+  binaryPath: string,
+  versionId: string,
+  mode: "dry-run" | "upload"
+): string {
+  return buildDisplayCommand(
+    binaryPath,
+    buildLocalizationsUploadArgs(
+      versionId,
+      "<generated-localizations-dir>",
+      mode
+    )
+  );
+}
+
+function buildAttachBuildArgs(versionId: string, buildId: string): string[] {
+  return [
+    "versions",
+    "attach-build",
+    "--version-id",
+    versionId,
+    "--build",
+    buildId,
+    "--output",
+    "json"
+  ];
+}
+
+function buildValidateArgs(
+  appId: string,
+  versionId: string,
+  platform: string
+): string[] {
+  return [
+    "validate",
+    "--app",
+    appId,
+    "--version-id",
+    versionId,
+    "--platform",
+    platform,
+    "--output",
+    "json"
+  ];
+}
+
+function buildSubmitCreateArgs(
+  appId: string,
+  versionId: string,
+  buildId: string,
+  platform: string
+): string[] {
+  return [
+    "submit",
+    "create",
+    "--app",
+    appId,
+    "--version-id",
+    versionId,
+    "--build",
+    buildId,
+    "--platform",
+    platform,
+    "--confirm",
+    "--output",
+    "json"
+  ];
+}
+
+function escapeStringsValue(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\r/g, "")
+    .replace(/\n/g, "\\n")
+    .replace(/"/g, '\\"');
+}
+
+async function withLocalizationStringsDir<T>(
   localizedReleaseNotes: LocalizedReleaseNotes,
-  callback: (metadataDir: string) => Promise<T>
+  callback: (localizationsDir: string) => Promise<T>
 ): Promise<T> {
-  const metadataDir = await mkdtemp(join(tmpdir(), "store-agent-metadata-"));
+  const localizationsDir = await mkdtemp(
+    join(tmpdir(), "store-agent-localizations-")
+  );
 
   try {
     for (const [locale, notes] of Object.entries(localizedReleaseNotes)) {
-      const localeDir = join(metadataDir, locale);
-      await mkdir(localeDir, { recursive: true });
-      await writeFile(join(localeDir, "release_notes.txt"), `${notes.trim()}\n`);
+      await writeFile(
+        join(localizationsDir, `${locale}.strings`),
+        `"whatsNew" = "${escapeStringsValue(notes.trim())}";\n`
+      );
     }
 
-    return await callback(metadataDir);
+    return await callback(localizationsDir);
   } finally {
-    await rm(metadataDir, { recursive: true, force: true });
+    await rm(localizationsDir, { recursive: true, force: true });
   }
 }
 
-function summarizeReleaseRunPlan(input: {
+async function lookupAppStoreVersion(input: {
+  binaryPath: string;
+  appId: string;
   version: string;
+  platform: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  lookup: AscCommandResult;
+  versionRecord: AppStoreVersionRecord | null;
+}> {
+  const lookup = await readProcessOutput(
+    input.binaryPath,
+    buildVersionLookupArgs(input.appId, input.version, input.platform),
+    input.env
+  );
+
+  return {
+    lookup,
+    versionRecord: findAppStoreVersionRecord(lookup.json, input.version)
+  };
+}
+
+async function ensureAppStoreVersion(input: {
+  binaryPath: string;
+  appId: string;
+  version: string;
+  platform: string;
+  releaseMode?: NormalizedActionRequest["releaseMode"];
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  lookup: AscCommandResult;
+  create: AscCommandResult | null;
+  versionRecord: AppStoreVersionRecord;
+  created: boolean;
+}> {
+  const existing = await lookupAppStoreVersion({
+    binaryPath: input.binaryPath,
+    appId: input.appId,
+    version: input.version,
+    platform: input.platform,
+    env: input.env
+  });
+  if (existing.versionRecord) {
+    return {
+      lookup: existing.lookup,
+      create: null,
+      versionRecord: existing.versionRecord,
+      created: false
+    };
+  }
+
+  const create = await readProcessOutput(
+    input.binaryPath,
+    buildVersionCreateArgs(
+      input.appId,
+      input.version,
+      input.platform,
+      input.releaseMode
+    ),
+    input.env
+  );
+  const versionRecord = requireAppStoreVersionRecord(
+    findAppStoreVersionRecord(create.json, input.version),
+    input.version,
+    input.platform
+  );
+
+  return {
+    lookup: existing.lookup,
+    create,
+    versionRecord,
+    created: true
+  };
+}
+
+function summarizePrepareReleasePlan(input: {
+  version: string;
+  versionExists: boolean;
   buildNumber: string;
   buildId: string;
   locales: string[];
+  dryRunValidated: boolean;
+  buildAlreadyAttached: boolean;
 }): string[] {
   return [
-    `Will create or update App Store version ${input.version}.`,
-    `Will attach build ${input.buildNumber} (${input.buildId}).`,
+    input.versionExists
+      ? `Will update existing App Store version ${input.version}.`
+      : `Will create App Store version ${input.version}.`,
+    input.buildAlreadyAttached
+      ? `Build ${input.buildNumber} (${input.buildId}) is already attached.`
+      : `Will attach build ${input.buildNumber} (${input.buildId}).`,
     `Will apply localized release notes for ${input.locales.length} locale(s).`,
-    "Dry-run validation succeeded."
+    input.dryRunValidated
+      ? "Localization dry-run succeeded."
+      : "Localization dry-run will run during execution after the version exists.",
+    "Full App Store validation will run during execution after metadata upload and build attachment."
   ];
 }
 
@@ -426,20 +762,6 @@ function extractLocalizedReleaseNotesFromPlan(
   }
 
   return localizedReleaseNotes;
-}
-
-function extractLocalesFromPlan(plan: ProviderExecutionPlan): string[] {
-  const rawLocales = plan.rawProviderData.locales;
-  if (!Array.isArray(rawLocales)) {
-    return Object.keys(extractLocalizedReleaseNotesFromPlan(plan));
-  }
-
-  const locales = rawLocales.filter(
-    (value): value is string => typeof value === "string" && value.trim().length > 0
-  );
-  return locales.length > 0
-    ? locales
-    : Object.keys(extractLocalizedReleaseNotesFromPlan(plan));
 }
 
 async function readProcessOutput(
@@ -595,26 +917,105 @@ export class AppleAscProvider implements ProviderAdapter {
       );
       const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
 
-      const localizations = await readProcessOutput(
+      const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: app.appId,
+        version,
+        platform: app.platform,
+        env: this.env
+      });
+
+      const appInfoLocalizations = await readProcessOutput(
         this.binaryPath,
-        ["localizations", "list", "--app", app.appId, "--output", "json"],
+        buildAppInfoLocalizationsListArgs(app.appId),
         this.env
       );
-      const locales = extractLocales(localizations.json);
+      const locales = extractLocales(appInfoLocalizations.json);
       const localizedReleaseNotes =
         await this.releaseNotesTranslator.translateReleaseNotes({
           baseNotes: releaseNotes,
           locales
         });
 
-      const dryRun = await withReleaseMetadataDir(
-        localizedReleaseNotes,
-        async (metadataDir) =>
-          readProcessOutput(
+      let versionDetails: AscCommandResult | null = null;
+      let attachedBuildId: string | null = null;
+      let localizationsDryRun: AscCommandResult | null = null;
+
+      if (versionRecord) {
+        versionDetails = await readProcessOutput(
+          this.binaryPath,
+          buildVersionGetArgs(versionRecord.versionId),
+          this.env
+        );
+        attachedBuildId = extractAttachedBuildId(versionDetails.json);
+        localizationsDryRun = await withLocalizationStringsDir(
+          localizedReleaseNotes,
+          async (localizationsDir) =>
+            readProcessOutput(
+              this.binaryPath,
+              buildLocalizationsUploadArgs(
+                versionRecord.versionId,
+                localizationsDir,
+                "dry-run"
+              ),
+              this.env
+            )
+        );
+      }
+
+      const previewVersionId = versionRecord?.versionId ?? "<version-id-from-create>";
+      const previewCommands = [
+        latestBuild.displayCommand,
+        versionLookup.displayCommand,
+        appInfoLocalizations.displayCommand
+      ];
+      if (!versionRecord) {
+        previewCommands.push(
+          buildDisplayCommand(
             this.binaryPath,
-            buildReleaseRunArgs(app.appId, version, buildId, metadataDir, "dry-run"),
-            this.env
+            buildVersionCreateArgs(
+              app.appId,
+              version,
+              app.platform,
+              request.releaseMode
+            )
           )
+        );
+      }
+      previewCommands.push(
+        buildLocalizationsUploadDisplayCommand(
+          this.binaryPath,
+          previewVersionId,
+          "dry-run"
+        ),
+        buildLocalizationsUploadDisplayCommand(
+          this.binaryPath,
+          previewVersionId,
+          "upload"
+        )
+      );
+      if (!versionRecord || attachedBuildId !== buildId) {
+        previewCommands.push(
+          buildDisplayCommand(
+            this.binaryPath,
+            buildAttachBuildArgs(previewVersionId, buildId)
+          )
+        );
+      }
+      previewCommands.push(
+        buildDisplayCommand(
+          this.binaryPath,
+          buildValidateArgs(app.appId, previewVersionId, app.platform)
+        ),
+        buildDisplayCommand(
+          this.binaryPath,
+          buildSubmitCreateArgs(
+            app.appId,
+            previewVersionId,
+            buildId,
+            app.platform
+          )
+        )
       );
 
       return providerExecutionPlanSchema.parse({
@@ -627,35 +1028,28 @@ export class AppleAscProvider implements ProviderAdapter {
         buildStrategy: request.buildStrategy,
         buildId,
         buildNumber,
-        previewCommands: [
-          latestBuild.displayCommand,
-          localizations.displayCommand,
-          buildReleaseRunDisplayCommand(
-            this.binaryPath,
-            app.appId,
-            version,
-            buildId,
-            "dry-run"
-          ),
-          buildReleaseRunDisplayCommand(
-            this.binaryPath,
-            app.appId,
-            version,
-            buildId,
-            "confirm"
-          )
-        ],
-        validationSummary: summarizeReleaseRunPlan({
+        previewCommands,
+        validationSummary: summarizePrepareReleasePlan({
           version,
+          versionExists: Boolean(versionRecord),
           buildNumber,
           buildId,
-          locales
+          locales,
+          dryRunValidated: Boolean(localizationsDryRun),
+          buildAlreadyAttached: attachedBuildId === buildId
         }),
-        executionSummary: `Prepared release workflow for version ${version} build ${buildNumber} across ${locales.length} locale(s).`,
+        executionSummary: versionRecord
+          ? `Prepared release workflow for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
+          : `Prepared release workflow to create version ${version} with build ${buildNumber} across ${locales.length} locale(s).`,
         rawProviderData: {
           latestBuild: latestBuild.json,
-          localizations: localizations.json,
-          releaseRunDryRun: dryRun.json,
+          versionLookup: versionLookup.json,
+          versionId: versionRecord?.versionId,
+          versionState: versionRecord?.appStoreState,
+          versionDetails: versionDetails?.json,
+          appInfoLocalizations: appInfoLocalizations.json,
+          localizationsDryRun: localizationsDryRun?.json,
+          attachedBuildId,
           localizedReleaseNotes,
           locales,
           releaseNotes
@@ -681,30 +1075,42 @@ export class AppleAscProvider implements ProviderAdapter {
       this.env
     );
     const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
+    const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
+      binaryPath: this.binaryPath,
+      appId: app.appId,
+      version,
+      platform: app.platform,
+      env: this.env
+    });
+    const resolvedVersion = requireAppStoreVersionRecord(
+      versionRecord,
+      version,
+      app.platform
+    );
 
     const validation = await readProcessOutput(
       this.binaryPath,
-      ["validate", "--app", app.appId, "--version", version, "--output", "json"],
+      buildValidateArgs(app.appId, resolvedVersion.versionId, app.platform),
       this.env
     );
 
-    const previewCommands = [latestBuild.displayCommand, validation.displayCommand];
+    const previewCommands = [
+      latestBuild.displayCommand,
+      versionLookup.displayCommand,
+      validation.displayCommand
+    ];
 
     if (request.actionType === "submit_release_for_review") {
       previewCommands.push(
-        buildDisplayCommand(this.binaryPath, [
-          "submit",
-          "create",
-          "--app",
-          app.appId,
-          "--version",
-          version,
-          "--build",
-          buildId,
-          "--confirm",
-          "--output",
-          "json"
-        ])
+        buildDisplayCommand(
+          this.binaryPath,
+          buildSubmitCreateArgs(
+            app.appId,
+            resolvedVersion.versionId,
+            buildId,
+            app.platform
+          )
+        )
       );
     }
 
@@ -728,6 +1134,9 @@ export class AppleAscProvider implements ProviderAdapter {
             : `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}).`,
       rawProviderData: {
         latestBuild: latestBuild.json,
+        versionLookup: versionLookup.json,
+        versionId: resolvedVersion.versionId,
+        versionState: resolvedVersion.appStoreState,
         validation: validation.json
       }
     });
@@ -736,84 +1145,18 @@ export class AppleAscProvider implements ProviderAdapter {
   public async revalidate(
     context: RevalidateRequestContext
   ): Promise<ProviderExecutionPlan> {
-    if (context.request.actionType === "prepare_release_for_review") {
-      const version = requireVersion(context.request);
-      const buildId = context.previousPlan.buildId;
-      const buildNumber =
-        context.previousPlan.buildNumber ?? context.previousPlan.buildId ?? "unknown";
-
-      if (!buildId) {
-        throw new Error("The previous execution plan is missing a build ID.");
-      }
-
-      const localizedReleaseNotes =
-        extractLocalizedReleaseNotesFromPlan(context.previousPlan);
-      const locales = extractLocalesFromPlan(context.previousPlan);
-
-      const dryRun = await withReleaseMetadataDir(
-        localizedReleaseNotes,
-        async (metadataDir) =>
-          readProcessOutput(
-            this.binaryPath,
-            buildReleaseRunArgs(
-              context.app.appId,
-              version,
-              buildId,
-              metadataDir,
-              "dry-run"
-            ),
-            this.env
-          )
-      );
-
-      return providerExecutionPlanSchema.parse({
-        ...context.previousPlan,
-        appId: context.app.appId,
-        version,
-        buildId,
-        buildNumber,
-        previewCommands: [
-          ...context.previousPlan.previewCommands.slice(0, 2),
-          buildReleaseRunDisplayCommand(
-            this.binaryPath,
-            context.app.appId,
-            version,
-            buildId,
-            "dry-run"
-          ),
-          buildReleaseRunDisplayCommand(
-            this.binaryPath,
-            context.app.appId,
-            version,
-            buildId,
-            "confirm"
-          )
-        ],
-        validationSummary: summarizeReleaseRunPlan({
-          version,
-          buildNumber,
-          buildId,
-          locales
-        }),
-        executionSummary: `Prepared release workflow for version ${version} build ${buildNumber} across ${locales.length} locale(s).`,
-        rawProviderData: {
-          ...context.previousPlan.rawProviderData,
-          releaseRunDryRun: dryRun.json
-        }
-      });
-    }
-
     const latestPlan = await this.resolve({
       app: context.app,
       request: context.request
     });
 
     if (
-      context.previousPlan.actionType === "submit_release_for_review" &&
+      (context.previousPlan.actionType === "submit_release_for_review" ||
+        context.previousPlan.actionType === "prepare_release_for_review") &&
       latestPlan.buildId !== context.previousPlan.buildId
     ) {
       throw new Error(
-        `The latest build changed from ${context.previousPlan.buildId} to ${latestPlan.buildId}. Request a fresh approval before submitting.`
+        `The latest build changed from ${context.previousPlan.buildId} to ${latestPlan.buildId}. Request a fresh approval before proceeding.`
       );
     }
 
@@ -833,45 +1176,99 @@ export class AppleAscProvider implements ProviderAdapter {
       const localizedReleaseNotes = extractLocalizedReleaseNotesFromPlan(
         context.plan
       );
-
-      const releaseRun = await withReleaseMetadataDir(
+      const ensuredVersion = await ensureAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: context.app.appId,
+        version,
+        platform: context.app.platform,
+        releaseMode: context.request.releaseMode,
+        env: this.env
+      });
+      const versionId = ensuredVersion.versionRecord.versionId;
+      const versionDetails = await readProcessOutput(
+        this.binaryPath,
+        buildVersionGetArgs(versionId),
+        this.env
+      );
+      const attachedBuildId = extractAttachedBuildId(versionDetails.json);
+      const localizationResults = await withLocalizationStringsDir(
         localizedReleaseNotes,
-        async (metadataDir) =>
-          readProcessOutput(
+        async (localizationsDir) => {
+          const dryRun = await readProcessOutput(
             this.binaryPath,
-            buildReleaseRunArgs(
-              context.app.appId,
-              version,
-              buildId,
-              metadataDir,
-              "confirm"
-            ),
+            buildLocalizationsUploadArgs(versionId, localizationsDir, "dry-run"),
             this.env
-          )
+          );
+          const upload = await readProcessOutput(
+            this.binaryPath,
+            buildLocalizationsUploadArgs(versionId, localizationsDir, "upload"),
+            this.env
+          );
+
+          return { dryRun, upload };
+        }
+      );
+      let attachBuild: AscCommandResult | null = null;
+      if (attachedBuildId !== buildId) {
+        attachBuild = await readProcessOutput(
+          this.binaryPath,
+          buildAttachBuildArgs(versionId, buildId),
+          this.env
+        );
+      }
+      const validation = await readProcessOutput(
+        this.binaryPath,
+        buildValidateArgs(context.app.appId, versionId, context.app.platform),
+        this.env
+      );
+      const submit = await readProcessOutput(
+        this.binaryPath,
+        buildSubmitCreateArgs(
+          context.app.appId,
+          versionId,
+          buildId,
+          context.app.platform
+        ),
+        this.env
       );
 
       return providerExecutionResultSchema.parse({
         ok: true,
-        summary: `Created or updated version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, and submitted it for App Store review.`,
-        rawResult: releaseRun.json
+        summary: `Created or updated version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, validated it, and submitted it for App Store review.`,
+        rawResult: {
+          versionLookup: ensuredVersion.lookup.json,
+          versionCreate: ensuredVersion.create?.json,
+          versionDetails: versionDetails.json,
+          localizationsDryRun: localizationResults.dryRun.json,
+          localizationsUpload: localizationResults.upload.json,
+          attachBuild: attachBuild?.json,
+          validation: validation.json,
+          submit: submit.json
+        }
       });
     }
 
+    const resolvedVersion = requireAppStoreVersionRecord(
+      (
+        await lookupAppStoreVersion({
+          binaryPath: this.binaryPath,
+          appId: context.app.appId,
+          version,
+          platform: context.app.platform,
+          env: this.env
+        })
+      ).versionRecord,
+      version,
+      context.app.platform
+    );
     const submit = await readProcessOutput(
       this.binaryPath,
-      [
-        "submit",
-        "create",
-        "--app",
+      buildSubmitCreateArgs(
         context.app.appId,
-        "--version",
-        version,
-        "--build",
+        resolvedVersion.versionId,
         buildId,
-        "--confirm",
-        "--output",
-        "json"
-      ],
+        context.app.platform
+      ),
       this.env
     );
 
