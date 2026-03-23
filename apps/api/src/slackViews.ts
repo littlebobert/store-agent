@@ -22,6 +22,46 @@ function truncateLines(lines: string[], maxLines = 4): string {
   return lines.slice(0, maxLines).join("\n");
 }
 
+function chunkLines(lines: string[], maxChars: number): string[] {
+  const sourceLines = lines.length > 0 ? lines : ["(none)"];
+  const chunks: string[] = [];
+  let currentChunk: string[] = [];
+  let currentLength = 0;
+
+  for (const line of sourceLines) {
+    const nextLength =
+      currentLength + (currentChunk.length > 0 ? 1 : 0) + line.length;
+    if (currentChunk.length > 0 && nextLength > maxChars) {
+      chunks.push(currentChunk.join("\n"));
+      currentChunk = [line];
+      currentLength = line.length;
+      continue;
+    }
+
+    currentChunk.push(line);
+    currentLength = nextLength;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join("\n"));
+  }
+
+  return chunks;
+}
+
+function buildCommandBlocks(commands: string[]): KnownBlock[] {
+  return chunkLines(commands, 2600).map((chunk, index) => ({
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text:
+        index === 0
+          ? `*asc commands*\n\`\`\`${chunk}\`\`\``
+          : `*asc commands (continued)*\n\`\`\`${chunk}\`\`\``
+    }
+  }));
+}
+
 function formatActionType(actionType: NormalizedActionRequest["actionType"]): string {
   return {
     resolve_latest_build: "Resolve latest build",
@@ -214,13 +254,7 @@ export function buildApprovalBlocks(
         text: `*Validation summary*\n${truncateLines(input.plan.validationSummary)}`
       }
     },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*asc commands*\n\`\`\`${truncateLines(input.plan.previewCommands)}\`\`\``
-      }
-    },
+    ...buildCommandBlocks(input.plan.previewCommands),
     {
       type: "actions",
       elements: [
@@ -312,13 +346,7 @@ export function buildReadOnlyBlocks(
         text: `*${summaryLabel}*\n${truncateLines(plan.validationSummary, summaryLineCount)}`
       }
     },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*asc commands*\n\`\`\`${truncateLines(plan.previewCommands)}\`\`\``
-      }
-    }
+    ...buildCommandBlocks(plan.previewCommands)
   ];
 }
 
