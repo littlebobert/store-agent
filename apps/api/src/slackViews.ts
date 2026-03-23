@@ -336,3 +336,18 @@ export function buildErrorBlocks(
     }
   ];
 }
+
+export function buildConversationMessageBlocks(
+  title: string,
+  message: string
+): KnownBlock[] {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${title}*\n${message}`
+      }
+    }
+  ];
+}

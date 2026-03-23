@@ -2,12 +2,13 @@
 
 ## Overview
 
-This service accepts `/asc` commands in Slack, uses OpenAI to normalize English or Japanese release requests, resolves the concrete App Store Connect target with `asc`, and requires an explicit Slack approval before it performs any write action.
+This service accepts `/asc`, bot DMs, and mention-started Slack threads, uses OpenAI to normalize English or Japanese release requests, resolves the concrete App Store Connect target with `asc`, and requires an explicit Slack approval before it performs any write action.
 
 Implemented v1 action set:
 
 - `resolve_latest_build`
 - `validate_release`
+- `prepare_release_for_review`
 - `submit_release_for_review`
 - `release_status`
 
@@ -85,16 +86,30 @@ Required Slack scopes:
 
 - `commands`
 - `chat:write`
+- `app_mentions:read`
+- `im:history`
+- `channels:history`
+- `groups:history`
 
 Recommended Slack settings:
 
 - Slash command: `/asc`
 - Request URL: `https://<api-host>/slack/events`
 - Interactivity Request URL: `https://<api-host>/slack/events`
+- Event Subscriptions Request URL: `https://<api-host>/slack/events`
+- Bot events:
+  - `app_mention`
+  - `message.im`
+  - `message.channels`
+  - `message.groups`
+- Enable the App Home messages tab so users can DM the bot directly.
 
 Operational notes:
 
 - Invite the bot to every channel where you want execution status messages.
+- `/asc` in a channel starts a bot-owned planning thread in that channel.
+- Mentioning the bot in a thread starts or resumes the planning conversation in that thread.
+- DMs with the bot are handled as a persistent conversation surface without a modal.
 - The database allowlist is the source of truth. Slack channel membership or display names are not trusted for authorization.
 
 ## App Store Connect Credentials
@@ -120,7 +135,7 @@ The API and worker expect `asc` to run headlessly with:
 
 ## OpenAI Command Planning
 
-The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese. It also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
+The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese, ask follow-up questions in a thread or DM, and revise a plan over multiple turns. It also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
 
 Example phrases:
 
@@ -191,7 +206,7 @@ Run the SQL seed statements against the Azure PostgreSQL database before testing
 
 ### 6. Point Slack at Azure
 
-Set the slash command and interactivity URLs to:
+Set the slash command, interactivity, and Event Subscriptions URLs to:
 
 ```text
 https://<container-app-fqdn>/slack/events
@@ -199,14 +214,14 @@ https://<container-app-fqdn>/slack/events
 
 ## Release Flow
 
-1. Operator runs `/asc`.
-2. Slack modal collects the free-form command plus optional overrides.
-3. OpenAI normalizes the request.
+1. Operator starts with `/asc`, a DM to the bot, or a bot mention in a thread.
+2. Slack creates or resumes a conversation in the same DM or thread.
+3. OpenAI either asks a follow-up question or returns a typed action.
 4. The Apple provider resolves the exact build and preflight plan with `asc`.
-5. Slack shows the exact `asc` commands and waits for confirmation.
+5. Slack shows the exact `asc` commands in the same DM or thread and waits for confirmation.
 6. Confirmation enqueues a Service Bus job.
 7. The worker revalidates the build and runs the write command.
-8. Slack receives a success or failure message.
+8. Slack posts the success or failure message back into the same DM or thread.
 
 ## Troubleshooting
 
@@ -216,11 +231,19 @@ https://<container-app-fqdn>/slack/events
 - Confirm `is_active = true`.
 - For approval clicks, confirm the user role is `approver` or `admin`.
 
-### The modal plans the wrong app or version
+### The conversation plans the wrong app or version
 
-- Use the modal overrides for `app alias` and `version`.
+- Reply in the same thread or DM with the corrected app alias, version, or release notes.
+- Start a fresh `/asc` conversation if you want to discard the current planning context.
 - Review the OpenAI model and prompt output in logs.
 - Prefer stable app aliases such as `my-ios-app`.
+
+### DMs or mention threads do not trigger the bot
+
+- Confirm the Slack app was reinstalled after adding new OAuth scopes.
+- Confirm Event Subscriptions are enabled and pointing at `https://<api-host>/slack/events`.
+- Confirm the bot events `app_mention`, `message.im`, `message.channels`, and `message.groups` are subscribed.
+- Confirm the App Home messages tab is enabled for direct messages.
 
 ### `asc` command fails in Azure
 

@@ -89,6 +89,7 @@ export class ReleaseExecutor {
 
       await this.slackClient.chat.postMessage({
         channel: approval.channelId,
+        thread_ts: approval.threadTs ?? undefined,
         text: `<@${approval.requestedBy}> ${result.summary}`
       });
     } catch (error) {
@@ -102,6 +103,7 @@ export class ReleaseExecutor {
 
       await this.slackClient.chat.postMessage({
         channel: approval.channelId,
+        thread_ts: approval.threadTs ?? undefined,
         text: `<@${approval.requestedBy}> Release execution failed: ${message}`
       });
 

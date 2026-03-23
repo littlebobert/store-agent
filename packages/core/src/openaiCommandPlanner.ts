@@ -2,9 +2,12 @@ import OpenAI from "openai";
 import { z } from "zod";
 
 import {
+  type ConversationMessage,
   type DraftCommandInput,
   finalizeNormalizedActionRequest,
+  finalizeNormalizedActionRequestFromRawCommand,
   plannerOutputSchema,
+  type PlannerOutput,
   type NormalizedActionRequest
 } from "./actions.js";
 
@@ -33,6 +36,27 @@ const localizedReleaseNotesSchema = z.object({
 export type OpenAiLocalizedReleaseNotes = z.infer<
   typeof localizedReleaseNotesSchema
 >;
+
+const conversationPlannerResponseSchema = z
+  .object({
+    assistantReply: z.string().trim().min(1),
+    readyToResolve: z.boolean().default(false),
+    plannerOutput: z.record(z.string(), z.unknown()).optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.readyToResolve && !value.plannerOutput) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["plannerOutput"],
+        message: "plannerOutput is required when readyToResolve is true."
+      });
+    }
+  });
+
+export interface OpenAiConversationTurnResult {
+  assistantReply: string;
+  normalizedRequest: NormalizedActionRequest | null;
+}
 
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
@@ -112,7 +136,37 @@ function extractFirstMeaningfulString(
   return undefined;
 }
 
-function normalizePlannerOutput(value: unknown): unknown {
+function looksLikeVersionString(value: string): boolean {
+  return /^\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?$/.test(value);
+}
+
+function extractVersionFromText(text: string): string | undefined {
+  const patterns = [
+    /\bversion\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
+    /\bver(?:sion)?\.?\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
+    /バージョン\s*(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)/i,
+    /\bv\s*(\d+(?:\.\d+){1,}(?:[-+._a-zA-Z0-9]*)?)\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const candidate = match?.[1]?.trim();
+    if (candidate && looksLikeVersionString(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizePlannerOutput(
+  value: unknown,
+  input: {
+    rawCommand: string;
+    versionOverride?: string;
+    previousRequest?: Partial<NormalizedActionRequest> | null;
+  }
+): unknown {
   const normalized = replaceNullsWithUndefined(value);
 
   if (
@@ -124,7 +178,53 @@ function normalizePlannerOutput(value: unknown): unknown {
   }
 
   const record = { ...(normalized as Record<string, unknown>) };
+  const version = record.version;
   const releaseNotes = record.releaseNotes;
+
+  if (input.previousRequest) {
+    for (const key of [
+      "provider",
+      "actionType",
+      "appAlias",
+      "version",
+      "buildStrategy",
+      "explicitBuildId",
+      "releaseMode",
+      "releaseNotes",
+      "notes",
+      "commandLanguage"
+    ] satisfies Array<keyof NormalizedActionRequest>) {
+      if (record[key] === undefined && input.previousRequest[key] !== undefined) {
+        record[key] = input.previousRequest[key];
+      }
+    }
+  }
+
+  if (typeof version !== "string") {
+    const extractedVersion = extractFirstMeaningfulString(version, [
+      "value",
+      "version",
+      "marketingVersion",
+      "appStoreVersion",
+      "releaseVersion",
+      "targetVersion"
+    ]);
+
+    if (extractedVersion && looksLikeVersionString(extractedVersion)) {
+      record.version = extractedVersion;
+    }
+  }
+
+  if (typeof record.version !== "string" && input.versionOverride) {
+    record.version = input.versionOverride;
+  }
+
+  if (typeof record.version !== "string") {
+    const extractedVersionFromCommand = extractVersionFromText(input.rawCommand);
+    if (extractedVersionFromCommand) {
+      record.version = extractedVersionFromCommand;
+    }
+  }
 
   if (typeof releaseNotes !== "string") {
     const extractedReleaseNotes = extractFirstMeaningfulString(releaseNotes, [
@@ -171,6 +271,27 @@ function normalizePlannerOutput(value: unknown): unknown {
   return record;
 }
 
+function buildConversationRawCommand(messages: ConversationMessage[]): string {
+  return messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content.trim())
+    .filter((content) => content.length > 0)
+    .join("\n");
+}
+
+function parsePlannerOutput(
+  content: string,
+  input: {
+    rawCommand: string;
+    versionOverride?: string;
+    previousRequest?: Partial<NormalizedActionRequest> | null;
+  }
+): PlannerOutput {
+  return plannerOutputSchema.parse(
+    normalizePlannerOutput(JSON.parse(extractJsonPayload(content)), input)
+  );
+}
+
 function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) {
     return content;
@@ -208,6 +329,7 @@ export class OpenAiCommandPlanner {
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
+            "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Extract releaseNotes when the user provides release notes or 'what's new' text.",
             "releaseNotes must always be a single plain string with the operator's source text.",
             "Never return releaseNotes as an object, array, locale map, or translated bundle.",
@@ -237,11 +359,85 @@ export class OpenAiCommandPlanner {
       throw new Error("OpenAI did not return a command plan.");
     }
 
-    const parsed = plannerOutputSchema.parse(
-              normalizePlannerOutput(JSON.parse(extractJsonPayload(content)))
-    );
+    const parsed = parsePlannerOutput(content, {
+      rawCommand: draft.rawCommand,
+      versionOverride: draft.versionOverride
+    });
 
     return finalizeNormalizedActionRequest(draft, parsed);
+  }
+
+  public async planConversationTurn(input: {
+    messages: ConversationMessage[];
+    previousRequest?: NormalizedActionRequest | null;
+  }): Promise<OpenAiConversationTurnResult> {
+    const rawCommand = buildConversationRawCommand(input.messages);
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You help operators plan mobile release workflows in a multi-turn Slack conversation.",
+            "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
+            "Supported providers: apple, google-play.",
+            "Supported actionType values: resolve_latest_build, validate_release, prepare_release_for_review, submit_release_for_review, release_status.",
+            "Supported releaseMode values: manual_after_review, automatic_on_approval.",
+            "Supported buildStrategy values: latest_for_version, explicit_build_id.",
+            "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
+            "Extract releaseNotes when the user provides release notes or 'what's new' text.",
+            "releaseNotes must always be a single plain string with the operator's source text.",
+            "Never return releaseNotes as an object, array, locale map, or translated bundle.",
+            "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
+            "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
+            "If you have enough information, set readyToResolve to true, assistantReply to a short confirmation sentence, and plannerOutput to a complete self-contained request object.",
+            "When readyToResolve is true, plannerOutput must include every required field needed for the selected action, not just changed fields.",
+            "Never invent app IDs or build IDs.",
+            "Infer commandLanguage as english, japanese, mixed, or unknown.",
+            "Omit unknown optional fields instead of returning null.",
+            "Return JSON only with keys assistantReply, readyToResolve, and plannerOutput when applicable."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            previousRequest: input.previousRequest ?? null,
+            conversationMessages: input.messages
+          })
+        }
+      ]
+    });
+
+    const content = completion.choices[0]?.message.content;
+    if (!content) {
+      throw new Error("OpenAI did not return a conversation plan.");
+    }
+
+    const parsed = conversationPlannerResponseSchema.parse(
+      JSON.parse(extractJsonPayload(content))
+    );
+
+    if (!parsed.readyToResolve || !parsed.plannerOutput) {
+      return {
+        assistantReply: parsed.assistantReply,
+        normalizedRequest: null
+      };
+    }
+
+    const plannerOutput = parsePlannerOutput(JSON.stringify(parsed.plannerOutput), {
+      rawCommand,
+      previousRequest: input.previousRequest
+    });
+
+    return {
+      assistantReply: parsed.assistantReply,
+      normalizedRequest: finalizeNormalizedActionRequestFromRawCommand(
+        rawCommand,
+        plannerOutput
+      )
+    };
   }
 }
 

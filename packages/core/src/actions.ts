@@ -32,6 +32,17 @@ export const commandLanguageSchema = z.enum([
 ]);
 export type CommandLanguage = z.infer<typeof commandLanguageSchema>;
 
+export const conversationMessageRoleSchema = z.enum(["user", "assistant"]);
+export type ConversationMessageRole = z.infer<
+  typeof conversationMessageRoleSchema
+>;
+
+export const conversationMessageSchema = z.object({
+  role: conversationMessageRoleSchema,
+  content: z.string().trim().min(1).max(8000)
+});
+export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
+
 const plannerOutputObjectSchema = z.object({
   provider: providerIdSchema,
   actionType: actionTypeSchema,
@@ -179,6 +190,23 @@ export function finalizeNormalizedActionRequest(
   return normalizedActionRequestSchema.parse({
     ...merged,
     rawCommand: draft.rawCommand
+  });
+}
+
+export function finalizeNormalizedActionRequestFromRawCommand(
+  rawCommand: string,
+  plannerOutput: PlannerOutput
+): NormalizedActionRequest {
+  if (plannerOutput.needsClarification) {
+    throw new Error(
+      plannerOutput.clarificationQuestion ??
+        "The command is ambiguous and needs clarification."
+    );
+  }
+
+  return normalizedActionRequestSchema.parse({
+    ...plannerOutput,
+    rawCommand
   });
 }
 
