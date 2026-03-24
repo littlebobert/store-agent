@@ -141,6 +141,84 @@ function looksLikeVersionString(value: string): boolean {
   return /^\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?$/.test(value);
 }
 
+function matchesAnyPattern(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function inferActionTypeFromCommandText(
+  text: string
+): PlannerOutput["actionType"] | undefined {
+  const normalized = text.trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  const cancellationRequested =
+    matchesAnyPattern(normalized, [
+      /\bcancel\b/i,
+      /\bwithdraw\b/i,
+      /\bpull\s+back\b/i,
+      /キャンセル/i,
+      /取り下げ/i,
+      /取消/i
+    ]) &&
+    matchesAnyPattern(normalized, [
+      /\bsubmit\b/i,
+      /\bsubmission\b/i,
+      /\breview\b/i,
+      /審査/i
+    ]);
+  if (cancellationRequested) {
+    return "cancel_review_submission";
+  }
+
+  const metadataMutationRequested = matchesAnyPattern(normalized, [
+    /\brelease notes?\b/i,
+    /what'?s new/i,
+    /\blocali[sz](?:e|ation)\b/i,
+    /\btranslate\b/i,
+    /\bmetadata\b/i,
+    /\bdescription\b/i,
+    /\bkeywords?\b/i,
+    /promotional text/i,
+    /\bcreate\b.*\bversion\b/i,
+    /\bcreate\b.*\brelease\b/i,
+    /\bnew\b.*\brelease\b/i,
+    /\bensure\b.*\bversion\b/i,
+    /リリースノート/i,
+    /ローカライズ/i,
+    /翻訳/i,
+    /メタデータ/i
+  ]);
+  if (metadataMutationRequested) {
+    return "prepare_release_for_review";
+  }
+
+  const submissionRequested = matchesAnyPattern(normalized, [
+    /\bsubmit\b/i,
+    /\bfor review\b/i,
+    /\bapple review\b/i,
+    /\bapp store review\b/i,
+    /\bpublic release\b/i,
+    /審査に提出/i,
+    /レビューに提出/i,
+    /提出して/i
+  ]);
+  const buildAttachmentRequested = matchesAnyPattern(normalized, [
+    /\battach\b/i,
+    /\blatest testflight\b/i,
+    /\blatest build\b/i,
+    /最新.*TestFlight/i,
+    /TestFlight.*添付/i
+  ]);
+
+  if (submissionRequested || buildAttachmentRequested) {
+    return "submit_release_for_review";
+  }
+
+  return undefined;
+}
+
 function extractVersionFromText(text: string): string | undefined {
   const patterns = [
     /\bversion\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
@@ -173,6 +251,7 @@ function normalizePlannerOutput(
   value: unknown,
   input: {
     rawCommand: string;
+    latestUserMessage?: string;
     versionOverride?: string;
     previousRequest?: Partial<NormalizedActionRequest> | null;
   }
@@ -209,6 +288,13 @@ function normalizePlannerOutput(
         record[key] = input.previousRequest[key];
       }
     }
+  }
+
+  const inferredActionType = inferActionTypeFromCommandText(
+    input.latestUserMessage ?? input.rawCommand
+  );
+  if (inferredActionType) {
+    record.actionType = inferredActionType;
   }
 
   if (typeof appReference !== "string") {
@@ -327,6 +413,7 @@ function parsePlannerOutput(
   content: string,
   input: {
     rawCommand: string;
+    latestUserMessage?: string;
     versionOverride?: string;
     previousRequest?: Partial<NormalizedActionRequest> | null;
   }
@@ -383,6 +470,7 @@ export class OpenAiCommandPlanner {
             "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
             "Use prepare_release_for_review when the user wants to create or ensure an App Store version, or update release notes/localizations/metadata before submission.",
             "Use submit_release_for_review for requests about sending an existing draft version/build to Apple review or public App Store release, including attaching the latest TestFlight build when the user did not ask to change metadata.",
+            "Requests like 'attach the latest TestFlight to dotsu for iOS 1.3.8 and submit it for review' should use submit_release_for_review, not prepare_release_for_review, unless the user also asks to change metadata.",
             "Use cancel_review_submission for requests about cancelling, withdrawing, or pulling back an App Store review submission that was already sent to Apple.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
             "Omit unknown optional fields instead of returning null.",
@@ -409,6 +497,7 @@ export class OpenAiCommandPlanner {
 
     const parsed = parsePlannerOutput(content, {
       rawCommand: draft.rawCommand,
+      latestUserMessage: draft.rawCommand,
       versionOverride: draft.versionOverride
     });
 
@@ -420,6 +509,11 @@ export class OpenAiCommandPlanner {
     previousRequest?: NormalizedActionRequest | null;
   }): Promise<OpenAiConversationTurnResult> {
     const rawCommand = buildConversationRawCommand(input.messages);
+    const latestUserMessage =
+      [...input.messages]
+        .reverse()
+        .find((message) => message.role === "user")
+        ?.content ?? rawCommand;
     const completion = await this.client.chat.completions.create({
       model: this.model,
       temperature: 0,
@@ -444,6 +538,7 @@ export class OpenAiCommandPlanner {
             "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
             "Use prepare_release_for_review when the user wants to create or ensure an App Store version, or update release notes/localizations/metadata before submission.",
             "Use submit_release_for_review for requests about sending an already prepared version/build to Apple review or public App Store release, including attaching the latest TestFlight build when the user did not ask to change metadata.",
+            "Requests like 'attach the latest TestFlight to dotsu for iOS 1.3.8 and submit it for review' should use submit_release_for_review, not prepare_release_for_review, unless the user also asks to change metadata.",
             "Use cancel_review_submission for requests about cancelling, withdrawing, or pulling back an App Store review submission that was already sent to Apple.",
             "Treat direct requests phrased like 'can you ...' as instructions, not as ambiguity.",
             "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
@@ -484,6 +579,7 @@ export class OpenAiCommandPlanner {
 
     const plannerOutput = parsePlannerOutput(JSON.stringify(parsed.plannerOutput), {
       rawCommand,
+      latestUserMessage,
       previousRequest: input.previousRequest
     });
 
