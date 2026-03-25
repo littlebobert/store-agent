@@ -92,6 +92,19 @@ function extractGeneratedCommandFromError(rawError: string): string | null {
   return command && command.length > 0 ? command : null;
 }
 
+function formatRawPlanningError(rawError: string): string {
+  const generatedCommand = extractGeneratedCommandFromError(rawError);
+  if (!generatedCommand) {
+    return rawError;
+  }
+
+  const withoutGeneratedCommand = rawError
+    .replace(/\s*Generated command:\s*.+$/im, "")
+    .trim();
+
+  return `${withoutGeneratedCommand}\n\nGenerated command:\n\`\`\`${generatedCommand}\`\`\``;
+}
+
 function stripAppMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/gi, "").replace(/\s+/g, " ").trim();
 }
@@ -575,20 +588,20 @@ async function main(): Promise<void> {
       const rawError = toErrorMessage(error);
       const rawCommand = session ? buildConversationRawCommand(session.messages) : trimmedText;
       const generatedCommand = extractGeneratedCommandFromError(rawError);
-      let slackMessage = rawError;
+      let slackMessage = generatedCommand
+        ? formatRawPlanningError(rawError)
+        : rawError;
 
-      try {
-        const summary = await errorSummarizer.summarizePlanningError({
-          rawCommand,
-          rawError
-        });
-        slackMessage = formatErrorSummary(summary);
-      } catch (summaryError) {
-        console.error("OpenAI planning-error summarization failed", summaryError);
-      }
-
-      if (generatedCommand && !slackMessage.includes(generatedCommand)) {
-        slackMessage = `${slackMessage}\n\nGenerated command:\n\`\`\`${generatedCommand}\`\`\``;
+      if (!generatedCommand) {
+        try {
+          const summary = await errorSummarizer.summarizePlanningError({
+            rawCommand,
+            rawError
+          });
+          slackMessage = formatErrorSummary(summary);
+        } catch (summaryError) {
+          console.error("OpenAI planning-error summarization failed", summaryError);
+        }
       }
 
       if (session) {
