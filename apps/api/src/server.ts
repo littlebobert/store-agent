@@ -86,6 +86,12 @@ function formatErrorSummary(summary: OpenAiErrorSummary): string {
   );
 }
 
+function extractGeneratedCommandFromError(rawError: string): string | null {
+  const match = rawError.match(/Generated command:\s*(.+)$/im);
+  const command = match?.[1]?.trim();
+  return command && command.length > 0 ? command : null;
+}
+
 function stripAppMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/gi, "").replace(/\s+/g, " ").trim();
 }
@@ -568,6 +574,7 @@ async function main(): Promise<void> {
       console.error("Unable to plan request", error);
       const rawError = toErrorMessage(error);
       const rawCommand = session ? buildConversationRawCommand(session.messages) : trimmedText;
+      const generatedCommand = extractGeneratedCommandFromError(rawError);
       let slackMessage = rawError;
 
       try {
@@ -578,6 +585,10 @@ async function main(): Promise<void> {
         slackMessage = formatErrorSummary(summary);
       } catch (summaryError) {
         console.error("OpenAI planning-error summarization failed", summaryError);
+      }
+
+      if (generatedCommand && !slackMessage.includes(generatedCommand)) {
+        slackMessage = `${slackMessage}\n\nGenerated command:\n\`\`\`${generatedCommand}\`\`\``;
       }
 
       if (session) {
