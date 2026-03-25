@@ -299,6 +299,8 @@ export class OpenAiAscCommandRecipePlanner {
             "Available base placeholders are {{appId}}, {{appAlias}}, {{appReference}}, {{platform}}, and {{version}} when provided.",
             "Support read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status when the docs show matching commands.",
             "If the user asks for average rating or rating counts, prefer asc reviews ratings.",
+            "For asc reviews ratings, use the ratings subcommand itself with flags like --app, --country, --all, --output, --pretty, and --workers only when needed.",
+            "Do not use asc reviews get for aggregate rating questions.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "Every step must include a short purpose string and an args array.",
             "Use the key steps for the ordered command list; do not rename it to commands or another key unless necessary.",

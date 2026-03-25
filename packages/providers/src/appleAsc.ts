@@ -72,23 +72,27 @@ interface CommandExecutionState {
   outputs: PlannedCommandOutput[];
 }
 
-const ASC_DOC_HELP_TOPICS = [
-  "apps",
-  "app-info",
-  "app-infos",
-  "builds",
-  "versions",
-  "localizations",
-  "submit",
-  "review",
-  "validate",
-  "testflight",
-  "reviews",
-  "feedback",
-  "crashes",
-  "finance",
-  "analytics",
-  "users"
+const ASC_DOC_HELP_PATHS = [
+  ["apps"],
+  ["app-info"],
+  ["app-infos"],
+  ["builds"],
+  ["versions"],
+  ["localizations"],
+  ["submit"],
+  ["review"],
+  ["validate"],
+  ["testflight"],
+  ["reviews"],
+  ["reviews", "list"],
+  ["reviews", "get"],
+  ["reviews", "ratings"],
+  ["reviews", "summarizations"],
+  ["feedback"],
+  ["crashes"],
+  ["finance"],
+  ["analytics"],
+  ["users"]
 ] as const;
 
 function quoteArg(arg: string): string {
@@ -475,6 +479,17 @@ function renderStepArgs(
   strict: boolean
 ): string[] {
   return args.map((arg) => renderArgTemplate(arg, variables, strict));
+}
+
+function buildGeneratedStepCommand(
+  binaryPath: string,
+  step: AscCommandStep,
+  variables?: Record<string, string>
+): string {
+  return buildDisplayCommand(
+    binaryPath,
+    variables ? renderStepArgs(step.args, variables, false) : step.args
+  );
 }
 
 function readJsonPath(value: unknown, path: string): unknown {
@@ -1243,14 +1258,14 @@ export class AppleAscProvider implements ProviderAdapter {
           );
 
           const helpSections = await Promise.all(
-            ASC_DOC_HELP_TOPICS.map(async (topic) => {
+            ASC_DOC_HELP_PATHS.map(async (commandPath) => {
               try {
                 const result = await readProcessText(
                   this.binaryPath,
-                  [topic, "--help"],
+                  [...commandPath, "--help"],
                   this.env
                 );
-                return `## asc ${topic} --help\n\n\`\`\`text\n${result.stdout.trim()}\n\`\`\``;
+                return `## asc ${commandPath.join(" ")} --help\n\n\`\`\`text\n${result.stdout.trim()}\n\`\`\``;
               } catch {
                 return null;
               }
@@ -1308,7 +1323,10 @@ export class AppleAscProvider implements ProviderAdapter {
     return variables;
   }
 
-  private async validateCommandRecipe(recipe: AscCommandRecipe): Promise<{
+  private async validateCommandRecipe(
+    recipe: AscCommandRecipe,
+    variables?: Record<string, string>
+  ): Promise<{
     requiresConfirmation: boolean;
     firstWriteStepIndex: number;
   }> {
@@ -1316,10 +1334,15 @@ export class AppleAscProvider implements ProviderAdapter {
     let firstWriteStepIndex = recipe.steps.length;
 
     for (const [index, step] of recipe.steps.entries()) {
+      const generatedCommand = buildGeneratedStepCommand(
+        this.binaryPath,
+        step,
+        variables
+      );
       const commandPath = parseCommandPath(step.args);
       if (commandPath.length === 0) {
         throw new Error(
-          `The generated command recipe contains an invalid step with no asc subcommand path at step ${index + 1}.`
+          `The generated command recipe contains an invalid step with no asc subcommand path at step ${index + 1}. Generated command: ${generatedCommand}`
         );
       }
 
@@ -1332,7 +1355,7 @@ export class AppleAscProvider implements ProviderAdapter {
       for (const flag of extractLongFlags(step.args)) {
         if (!supportedFlags.has(flag.toLowerCase())) {
           throw new Error(
-            `The generated command recipe uses unsupported flag ${flag} for "asc ${commandPath.join(" ")}".`
+            `The generated command recipe uses unsupported flag ${flag} for "asc ${commandPath.join(" ")}". Generated command: ${generatedCommand}`
           );
         }
       }
@@ -1345,7 +1368,7 @@ export class AppleAscProvider implements ProviderAdapter {
       );
       if (step.captures.length > 0 && !stepReturnsJson) {
         throw new Error(
-          `The generated command recipe must use --output json when step ${index + 1} captures variables.`
+          `The generated command recipe must use --output json when step ${index + 1} captures variables. Generated command: ${generatedCommand}`
         );
       }
 
@@ -1516,9 +1539,9 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const { requiresConfirmation, firstWriteStepIndex } =
-        await this.validateCommandRecipe(recipe);
       const baseVariables = this.buildBaseVariables(app, request);
+      const { requiresConfirmation, firstWriteStepIndex } =
+        await this.validateCommandRecipe(recipe, baseVariables);
       const executionState = await this.executeRecipeSteps({
         recipe,
         baseVariables,
@@ -1872,14 +1895,17 @@ export class AppleAscProvider implements ProviderAdapter {
   ): Promise<ProviderExecutionPlan> {
     if (context.request.actionType === "run_asc_commands") {
       const recipe = extractCommandRecipeFromPlan(context.previousPlan);
+      const baseVariables = this.buildBaseVariables(context.app, context.request);
       const { requiresConfirmation, firstWriteStepIndex } =
-        await this.validateCommandRecipe(recipe);
+        await this.validateCommandRecipe(recipe, {
+          ...baseVariables,
+          ...extractCapturedVariablesFromPlan(context.previousPlan)
+        });
 
       if (!requiresConfirmation) {
         return context.previousPlan;
       }
 
-      const baseVariables = this.buildBaseVariables(context.app, context.request);
       const revalidatedState = await this.executeRecipeSteps({
         recipe,
         baseVariables,
@@ -1943,15 +1969,18 @@ export class AppleAscProvider implements ProviderAdapter {
   public async execute(context: ExecuteRequestContext) {
     if (context.request.actionType === "run_asc_commands") {
       const recipe = extractCommandRecipeFromPlan(context.plan);
+      const baseVariables = this.buildBaseVariables(context.app, context.request);
+      const initialVariables = extractCapturedVariablesFromPlan(context.plan);
       const { requiresConfirmation, firstWriteStepIndex } =
-        await this.validateCommandRecipe(recipe);
+        await this.validateCommandRecipe(recipe, {
+          ...baseVariables,
+          ...initialVariables
+        });
 
       if (!requiresConfirmation) {
         throw new Error("The dynamic asc command plan is not a write action.");
       }
 
-      const baseVariables = this.buildBaseVariables(context.app, context.request);
-      const initialVariables = extractCapturedVariablesFromPlan(context.plan);
       const storedOutputs = extractStoredOutputsFromPlan(context.plan);
       const executionState = await this.executeRecipeSteps({
         recipe,
