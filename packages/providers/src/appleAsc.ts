@@ -570,6 +570,17 @@ function summarizeGenericPayload(payload: Record<string, unknown>): string[] {
   return lines.length > 0 ? Array.from(new Set(lines)) : ["Command completed."];
 }
 
+function extractHelpText(result: AscTextResult): string {
+  const stdout = result.stdout.trim();
+  const stderr = result.stderr.trim();
+
+  if (stdout.length > 0 && stderr.length > 0) {
+    return `${stdout}\n${stderr}`;
+  }
+
+  return stdout.length > 0 ? stdout : stderr;
+}
+
 function extractCommandRecipeFromPlan(plan: ProviderExecutionPlan): AscCommandRecipe {
   return ascCommandRecipeSchema.parse(plan.rawProviderData.commandRecipe);
 }
@@ -1265,7 +1276,7 @@ export class AppleAscProvider implements ProviderAdapter {
                   [...commandPath, "--help"],
                   this.env
                 );
-                return `## asc ${commandPath.join(" ")} --help\n\n\`\`\`text\n${result.stdout.trim()}\n\`\`\``;
+                return `## asc ${commandPath.join(" ")} --help\n\n\`\`\`text\n${extractHelpText(result)}\n\`\`\``;
               } catch {
                 return null;
               }
@@ -1275,7 +1286,7 @@ export class AppleAscProvider implements ProviderAdapter {
           return [
             ascReference.trim(),
             "## Runtime Top-Level Help",
-            `\`\`\`text\n${topLevelHelp.stdout.trim()}\n\`\`\``,
+            `\`\`\`text\n${extractHelpText(topLevelHelp)}\n\`\`\``,
             ...helpSections.filter(
               (section): section is string => typeof section === "string"
             )
@@ -1300,7 +1311,7 @@ export class AppleAscProvider implements ProviderAdapter {
       this.binaryPath,
       [...commandPath, "--help"],
       this.env
-    ).then((result) => result.stdout);
+    ).then((result) => extractHelpText(result));
     this.helpTextCache.set(cacheKey, promise);
     return promise;
   }
