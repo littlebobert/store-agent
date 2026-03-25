@@ -108,13 +108,16 @@ export class OpenAiAscCommandRecipePlanner {
         {
           role: "system",
           content: [
-            "You generate exact asc CLI command recipes for Apple App Store Connect workflows.",
+            "You generate exact asc CLI command recipes for Apple App Store Connect workflows and read-only operator questions.",
             "Use the provided ASC docs as the source of truth.",
             "Return JSON only.",
             "Each step args array must exclude the binary name; the runtime will prepend 'asc'.",
             "Do not use shell syntax like &&, ;, pipes, redirects, backticks, or command substitution.",
             "Use {{variableName}} placeholders for runtime variables.",
             "Available base placeholders are {{appId}}, {{appAlias}}, {{appReference}}, {{platform}}, and {{version}} when provided.",
+            "Support read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status when the docs show matching commands.",
+            "If the user asks for average rating or rating counts, prefer asc reviews ratings.",
+            "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "If a later step needs an ID from an earlier command, add a read-only discovery step first and capture it with captures[].",
             "Each capture must use a scalar JSON path like data.id, data[0].id, data.attributes.version, or included[0].id.",
             "Use canonical capture names when applicable: versionId, buildId, buildNumber, submissionId, appInfoId, localizationId, reviewDetailId.",

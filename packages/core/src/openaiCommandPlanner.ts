@@ -386,7 +386,7 @@ export class OpenAiCommandPlanner {
         {
           role: "system",
           content: [
-            "You turn English or Japanese mobile release requests into a strict JSON object.",
+            "You turn English or Japanese App Store Connect operator requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
             "Supported actionType values: run_asc_commands.",
@@ -394,12 +394,14 @@ export class OpenAiCommandPlanner {
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
+            "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Always set actionType to run_asc_commands when you have enough information to proceed.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes.",
+            "Do not reject analytics or ratings questions just because they are not release workflows.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
             "Omit unknown optional fields instead of returning null.",
             "Output JSON only."
@@ -450,12 +452,13 @@ export class OpenAiCommandPlanner {
         {
           role: "system",
           content: [
-            "You help operators plan mobile release workflows in a multi-turn Slack conversation.",
+            "You help operators plan App Store Connect workflows and read-only queries in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
             "Supported actionType values: run_asc_commands.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
+            "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
@@ -463,6 +466,7 @@ export class OpenAiCommandPlanner {
             "Always set actionType to run_asc_commands when you have enough information to proceed.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes.",
             "Treat direct requests phrased like 'can you ...' as instructions, not as ambiguity.",
+            "Do not reject analytics or ratings questions just because they are not release workflows.",
             "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
             "If all required details are already present, do not ask the user to confirm your interpretation. Set readyToResolve to true.",
             "If you have enough information, set readyToResolve to true, assistantReply to a short confirmation sentence, and plannerOutput to a complete self-contained request object.",
