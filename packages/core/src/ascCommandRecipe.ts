@@ -53,6 +53,188 @@ export type OpenAiCommandOutputSummary = z.infer<
   typeof commandOutputSummarySchema
 >;
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function normalizeString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => (typeof item === "string" ? [item.trim()] : []))
+      .filter((item) => item.length > 0);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  return [];
+}
+
+function normalizeCommandArgsValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => (typeof item === "string" ? [item.trim()] : []))
+      .filter((item) => item.length > 0);
+  }
+
+  if (typeof value === "string") {
+    return tokenizeCommandString(value);
+  }
+
+  return [];
+}
+
+function tokenizeCommandString(command: string): string[] {
+  const tokens = Array.from(
+    command.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`|([^\s]+)/g)
+  )
+    .map((match) =>
+      (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim()
+    )
+    .filter((token) => token.length > 0);
+
+  return tokens[0] === "asc" ? tokens.slice(1) : tokens;
+}
+
+function deriveStepPurpose(args: string[], index: number): string {
+  const commandPath = args.filter((arg) => !arg.startsWith("--")).slice(0, 3);
+  if (commandPath.length > 0) {
+    return `Run ${commandPath.join(" ")}`;
+  }
+
+  return `Run step ${index + 1}`;
+}
+
+function normalizeCapture(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const name =
+    normalizeString(record.name) ?? normalizeString(record.variableName);
+  const jsonPath =
+    normalizeString(record.jsonPath) ??
+    normalizeString(record.path) ??
+    normalizeString(record.valuePath);
+  if (!name || !jsonPath) {
+    return null;
+  }
+
+  return { name, jsonPath };
+}
+
+function normalizeStep(value: unknown, index: number): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    const args = tokenizeCommandString(value);
+    if (args.length === 0) {
+      return null;
+    }
+
+    return {
+      purpose: deriveStepPurpose(args, index),
+      args,
+      captures: []
+    };
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const args =
+    normalizeCommandArgsValue(record.args).length > 0
+      ? normalizeCommandArgsValue(record.args)
+      : normalizeCommandArgsValue(record.command).length > 0
+        ? normalizeCommandArgsValue(record.command)
+        : normalizeCommandArgsValue(record.commandLine);
+  const normalizedArgs = args[0] === "asc" ? args.slice(1) : args;
+  if (normalizedArgs.length === 0) {
+    return null;
+  }
+
+  const captures = Array.isArray(record.captures)
+    ? record.captures
+        .map((capture) => normalizeCapture(capture))
+        .filter(
+          (capture): capture is Record<string, unknown> => capture !== null
+        )
+    : [];
+
+  return {
+    purpose:
+      normalizeString(record.purpose) ??
+      normalizeString(record.description) ??
+      deriveStepPurpose(normalizedArgs, index),
+    args: normalizedArgs,
+    captures
+  };
+}
+
+function normalizeRecipeOutput(value: unknown): unknown {
+  const record = asRecord(value) ?? {};
+  const nestedPlan = asRecord(record.plan);
+  const root = nestedPlan ?? record;
+
+  const rawSteps = Array.isArray(root.steps)
+    ? root.steps
+    : Array.isArray(root.commands)
+      ? root.commands
+      : Array.isArray(root.recipe)
+        ? root.recipe
+        : [];
+  const steps = rawSteps
+    .map((step, index) => normalizeStep(step, index))
+    .filter((step): step is Record<string, unknown> => step !== null);
+
+  const intentSummary =
+    normalizeString(root.intentSummary) ??
+    normalizeString(root.intent) ??
+    normalizeString(root.summary) ??
+    (steps.length > 0 ? deriveStepPurpose(steps[0].args as string[], 0) : "Prepare asc command plan.");
+  const executionSummary =
+    normalizeString(root.executionSummary) ??
+    normalizeString(root.summary) ??
+    intentSummary;
+  const validationSummary =
+    normalizeStringArray(root.validationSummary).length > 0
+      ? normalizeStringArray(root.validationSummary)
+      : normalizeStringArray(root.validation);
+  const clarificationQuestion =
+    normalizeString(root.clarificationQuestion) ??
+    normalizeString(root.question) ??
+    normalizeString(root.followUpQuestion);
+
+  return {
+    intentSummary,
+    executionSummary,
+    validationSummary,
+    requiresConfirmation:
+      typeof root.requiresConfirmation === "boolean"
+        ? root.requiresConfirmation
+        : false,
+    steps,
+    needsClarification: root.needsClarification === true,
+    clarificationQuestion
+  };
+}
+
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
@@ -118,6 +300,8 @@ export class OpenAiAscCommandRecipePlanner {
             "Support read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status when the docs show matching commands.",
             "If the user asks for average rating or rating counts, prefer asc reviews ratings.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
+            "Every step must include a short purpose string and an args array.",
+            "Use the key steps for the ordered command list; do not rename it to commands or another key unless necessary.",
             "If a later step needs an ID from an earlier command, add a read-only discovery step first and capture it with captures[].",
             "Each capture must use a scalar JSON path like data.id, data[0].id, data.attributes.version, or included[0].id.",
             "Use canonical capture names when applicable: versionId, buildId, buildNumber, submissionId, appInfoId, localizationId, reviewDetailId.",
@@ -152,7 +336,9 @@ export class OpenAiAscCommandRecipePlanner {
       throw new Error("OpenAI did not return an asc command recipe.");
     }
 
-    return ascCommandRecipeSchema.parse(JSON.parse(extractJsonPayload(content)));
+    return ascCommandRecipeSchema.parse(
+      normalizeRecipeOutput(JSON.parse(extractJsonPayload(content)))
+    );
   }
 }
 
