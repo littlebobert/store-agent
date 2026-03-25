@@ -2,16 +2,7 @@
 
 ## Overview
 
-This service accepts `/asc`, bot DMs, and mention-started Slack threads, uses OpenAI to normalize English or Japanese release requests, resolves the concrete App Store Connect target with `asc`, and requires an explicit Slack approval before it performs any write action.
-
-Implemented v1 action set:
-
-- `resolve_latest_build`
-- `validate_release`
-- `prepare_release_for_review`
-- `submit_release_for_review`
-- `cancel_review_submission`
-- `release_status`
+This service accepts `/asc`, bot DMs, and mention-started Slack threads, uses OpenAI to extract the request context from English or Japanese operator messages, resolves the concrete App Store Connect target with `asc`, and then asks OpenAI to generate a step-by-step `asc` command recipe from live `ASC.md` and `asc --help` documentation. Any plan that mutates App Store Connect still requires an explicit Slack approval before the worker executes it.
 
 ## Prerequisites
 
@@ -159,7 +150,7 @@ The API and worker expect `asc` to run headlessly with:
 
 ## OpenAI Command Planning
 
-The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese, ask follow-up questions in a thread or DM, and revise a plan over multiple turns. OpenAI returns a structured request including an `appReference` such as an app alias, bundle ID, or package name. The backend then resolves that reference to the canonical configured app alias before it builds any `asc` commands. The bot also uses OpenAI to turn raw `asc status` JSON into a concise Slack summary.
+The bot uses OpenAI before provider resolution so operators can write commands naturally in English or Japanese, ask follow-up questions in a thread or DM, and revise a plan over multiple turns. The first planning step returns structured request context including an `appReference` such as an app alias, bundle ID, or package name. The backend then resolves that reference to the canonical configured app alias and asks OpenAI to generate an `asc` command recipe from live `ASC.md` plus runtime `asc --help` output. The generated recipe is validated against the installed CLI help before it is shown in Slack or executed. The bot also uses OpenAI to summarize read-only command output for Slack.
 
 Example phrases:
 
@@ -170,7 +161,7 @@ Example phrases:
 - `show release status for jp.tech.kotoba.app`
 - `cancel the App Store review submission for dotsu version 1.3.8`
 
-The planner only returns a typed action plus the user-provided app reference. The actual `asc` commands are built by the Apple provider and shown back in Slack before approval.
+The conversation planner does not choose from a fixed Apple workflow enum. It resolves app context first, then the Apple provider generates a validated `asc` command recipe with captured variables such as `buildId` or `versionId`, and shows that exact command list back in Slack before approval.
 
 ## Azure Deployment
 
@@ -243,11 +234,11 @@ https://<container-app-fqdn>/slack/events
 
 1. Operator starts with `/asc`, a DM to the bot, or a bot mention in a thread.
 2. Slack creates or resumes a conversation in the same DM or thread.
-3. OpenAI either asks a follow-up question or returns a typed action.
-4. The Apple provider resolves the exact build and preflight plan with `asc`.
-5. Slack shows the exact `asc` commands in the same DM or thread and waits for confirmation.
+3. OpenAI either asks a follow-up question or returns the request context needed to continue.
+4. The Apple provider generates a validated `asc` command recipe from live CLI docs and runs any read-only preflight steps needed to capture IDs and resolve placeholders.
+5. Slack shows the exact `asc` commands in the same DM or thread and waits for confirmation when the plan is a write action.
 6. Confirmation enqueues a Service Bus job.
-7. The worker revalidates the build and runs the write command.
+7. The worker revalidates the captured preflight variables and runs the approved write steps from the stored recipe.
 8. Slack posts the success or failure message back into the same DM or thread.
 
 ## Troubleshooting
@@ -294,4 +285,4 @@ https://<container-app-fqdn>/slack/events
 ## Known Limits
 
 - Google Play is not implemented yet, but the provider boundary is ready for it.
-- The release mode is captured in the approval plan, but `asc submit create` is the only write path wired in v1. Validate any extra release-mode flags against the installed `asc` version before broadening the workflow.
+- The dynamic Apple planner still assumes the operator is asking about a configured app alias or identifier; app-global Apple commands without an app reference are not wired yet.

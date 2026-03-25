@@ -4,6 +4,7 @@ export const providerIdSchema = z.enum(["apple", "google-play"]);
 export type ProviderId = z.infer<typeof providerIdSchema>;
 
 export const actionTypeSchema = z.enum([
+  "run_asc_commands",
   "resolve_latest_build",
   "validate_release",
   "prepare_release_for_review",
@@ -63,6 +64,7 @@ export const plannerOutputSchema = plannerOutputObjectSchema.superRefine(
   (value, ctx) => {
     if (
       value.actionType !== "release_status" &&
+      value.actionType !== "run_asc_commands" &&
       value.buildStrategy === "latest_for_version" &&
       !value.version
     ) {
@@ -136,6 +138,7 @@ export const providerExecutionPlanSchema = z.object({
   buildStrategy: buildStrategySchema,
   buildId: z.string().trim().min(1).optional(),
   buildNumber: z.string().trim().min(1).optional(),
+  requiresConfirmation: z.boolean().default(false),
   previewCommands: z.array(z.string()).min(1),
   validationSummary: z.array(z.string()).default([]),
   executionSummary: z.string().trim().min(1),
@@ -231,6 +234,7 @@ export function summarizeActionRequest(
     Partial<Pick<NormalizedActionRequest, "appAlias">>
 ): string {
   const action = {
+    run_asc_commands: "Run ASC command plan",
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",

@@ -141,10 +141,6 @@ function looksLikeVersionString(value: string): boolean {
   return /^\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?$/.test(value);
 }
 
-function matchesAnyPattern(text: string, patterns: RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 function inferActionTypeFromCommandText(
   text: string
 ): PlannerOutput["actionType"] | undefined {
@@ -153,70 +149,7 @@ function inferActionTypeFromCommandText(
     return undefined;
   }
 
-  const cancellationRequested =
-    matchesAnyPattern(normalized, [
-      /\bcancel\b/i,
-      /\bwithdraw\b/i,
-      /\bpull\s+back\b/i,
-      /キャンセル/i,
-      /取り下げ/i,
-      /取消/i
-    ]) &&
-    matchesAnyPattern(normalized, [
-      /\bsubmit\b/i,
-      /\bsubmission\b/i,
-      /\breview\b/i,
-      /審査/i
-    ]);
-  if (cancellationRequested) {
-    return "cancel_review_submission";
-  }
-
-  const metadataMutationRequested = matchesAnyPattern(normalized, [
-    /\brelease notes?\b/i,
-    /what'?s new/i,
-    /\blocali[sz](?:e|ation)\b/i,
-    /\btranslate\b/i,
-    /\bmetadata\b/i,
-    /\bdescription\b/i,
-    /\bkeywords?\b/i,
-    /promotional text/i,
-    /\bcreate\b.*\bversion\b/i,
-    /\bcreate\b.*\brelease\b/i,
-    /\bnew\b.*\brelease\b/i,
-    /\bensure\b.*\bversion\b/i,
-    /リリースノート/i,
-    /ローカライズ/i,
-    /翻訳/i,
-    /メタデータ/i
-  ]);
-  if (metadataMutationRequested) {
-    return "prepare_release_for_review";
-  }
-
-  const submissionRequested = matchesAnyPattern(normalized, [
-    /\bsubmit\b/i,
-    /\bfor review\b/i,
-    /\bapple review\b/i,
-    /\bapp store review\b/i,
-    /\bpublic release\b/i,
-    /審査に提出/i,
-    /レビューに提出/i,
-    /提出して/i
-  ]);
-  const buildAttachmentRequested = matchesAnyPattern(normalized, [
-    /\battach\b/i,
-    /\blatest testflight\b/i,
-    /\blatest build\b/i,
-    /最新.*TestFlight/i,
-    /TestFlight.*添付/i
-  ]);
-
-  if (submissionRequested || buildAttachmentRequested) {
-    return "submit_release_for_review";
-  }
-
-  return undefined;
+  return "run_asc_commands";
 }
 
 function extractVersionFromText(text: string): string | undefined {
@@ -274,7 +207,6 @@ function normalizePlannerOutput(
   if (input.previousRequest) {
     for (const key of [
       "provider",
-      "actionType",
       "appReference",
       "version",
       "buildStrategy",
@@ -295,6 +227,8 @@ function normalizePlannerOutput(
   );
   if (inferredActionType) {
     record.actionType = inferredActionType;
+  } else if (record.actionType === undefined) {
+    record.actionType = "run_asc_commands";
   }
 
   if (typeof appReference !== "string") {
@@ -455,7 +389,7 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese mobile release requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: resolve_latest_build, validate_release, prepare_release_for_review, submit_release_for_review, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
@@ -464,14 +398,8 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Extract releaseNotes when the user provides release notes or 'what's new' text.",
-            "releaseNotes must always be a single plain string with the operator's source text.",
-            "Never return releaseNotes as an object, array, locale map, or translated bundle.",
-            "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
-            "Use prepare_release_for_review when the user wants to create or ensure an App Store version, or update release notes/localizations/metadata before submission.",
-            "Use submit_release_for_review for requests about sending an existing draft version/build to Apple review or public App Store release, including attaching the latest TestFlight build when the user did not ask to change metadata.",
-            "Requests like 'attach the latest TestFlight to dotsu for iOS 1.3.8 and submit it for review' should use submit_release_for_review, not prepare_release_for_review, unless the user also asks to change metadata.",
-            "Use cancel_review_submission for requests about cancelling, withdrawing, or pulling back an App Store review submission that was already sent to Apple.",
+            "Always set actionType to run_asc_commands when you have enough information to proceed.",
+            "If the operator includes extra context like release notes or desired behavior, preserve it in notes.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
             "Omit unknown optional fields instead of returning null.",
             "Output JSON only."
@@ -525,21 +453,15 @@ export class OpenAiCommandPlanner {
             "You help operators plan mobile release workflows in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: resolve_latest_build, validate_release, prepare_release_for_review, submit_release_for_review, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Extract releaseNotes when the user provides release notes or 'what's new' text.",
-            "releaseNotes must always be a single plain string with the operator's source text.",
-            "Never return releaseNotes as an object, array, locale map, or translated bundle.",
-            "If the user asks to translate release notes, keep releaseNotes as the single source string and let downstream tooling handle localization.",
-            "Use prepare_release_for_review when the user wants to create or ensure an App Store version, or update release notes/localizations/metadata before submission.",
-            "Use submit_release_for_review for requests about sending an already prepared version/build to Apple review or public App Store release, including attaching the latest TestFlight build when the user did not ask to change metadata.",
-            "Requests like 'attach the latest TestFlight to dotsu for iOS 1.3.8 and submit it for review' should use submit_release_for_review, not prepare_release_for_review, unless the user also asks to change metadata.",
-            "Use cancel_review_submission for requests about cancelling, withdrawing, or pulling back an App Store review submission that was already sent to Apple.",
+            "Always set actionType to run_asc_commands when you have enough information to proceed.",
+            "If the operator includes extra context like release notes or desired behavior, preserve it in notes.",
             "Treat direct requests phrased like 'can you ...' as instructions, not as ambiguity.",
             "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
             "If all required details are already present, do not ask the user to confirm your interpretation. Set readyToResolve to true.",

@@ -1,10 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  ascCommandRecipeSchema,
+  type AscCommandRecipe,
+  type AscCommandStep,
   type NormalizedActionRequest,
+  OpenAiAscCommandRecipePlanner,
+  OpenAiCommandOutputSummarizer,
   OpenAiReleaseNotesTranslator,
   providerExecutionPlanSchema,
   providerExecutionResultSchema,
@@ -47,6 +52,44 @@ interface AppStoreVersionRecord {
   versionString: string;
   appStoreState?: string;
 }
+
+interface AscTextResult {
+  args: string[];
+  displayCommand: string;
+  stdout: string;
+  stderr: string;
+}
+
+interface PlannedCommandOutput {
+  purpose: string;
+  command: string;
+  stdout: string;
+  json?: Record<string, unknown>;
+}
+
+interface CommandExecutionState {
+  variables: Record<string, string>;
+  outputs: PlannedCommandOutput[];
+}
+
+const ASC_DOC_HELP_TOPICS = [
+  "apps",
+  "app-info",
+  "app-infos",
+  "builds",
+  "versions",
+  "localizations",
+  "submit",
+  "review",
+  "validate",
+  "testflight",
+  "reviews",
+  "feedback",
+  "crashes",
+  "finance",
+  "analytics",
+  "users"
+] as const;
 
 function quoteArg(arg: string): string {
   if (/^[a-zA-Z0-9._:/=-]+$/.test(arg)) {
@@ -355,6 +398,211 @@ function extractAttachedBuildId(payload: Record<string, unknown>): string | null
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+function parseCommandPath(args: string[]): string[] {
+  const path: string[] = [];
+  for (const arg of args) {
+    if (arg.startsWith("--")) {
+      break;
+    }
+    path.push(arg);
+  }
+
+  return path;
+}
+
+function extractLongFlags(args: string[]): string[] {
+  return args
+    .filter((arg) => arg.startsWith("--"))
+    .map((arg) => arg.split("=")[0] ?? arg);
+}
+
+function isWriteCommandArgs(args: string[]): boolean {
+  if (args.some((arg) => arg === "--confirm" || arg.startsWith("--confirm="))) {
+    return true;
+  }
+
+  const path = parseCommandPath(args);
+  const lastSegment = path.at(-1) ?? "";
+  if (
+    [
+      "create",
+      "update",
+      "delete",
+      "remove",
+      "upload",
+      "release",
+      "cancel",
+      "set",
+      "submit",
+      "attach-build",
+      "add"
+    ].includes(lastSegment)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function renderArgTemplate(
+  arg: string,
+  variables: Record<string, string>,
+  strict: boolean
+): string {
+  return arg.replace(
+    /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g,
+    (_match: string, name: string) => {
+    const value = variables[name];
+    if (value !== undefined) {
+      return value;
+    }
+
+    if (strict) {
+      throw new Error(`The command plan references an unknown variable "${name}".`);
+    }
+
+    return `<${name}>`;
+    }
+  );
+}
+
+function renderStepArgs(
+  args: string[],
+  variables: Record<string, string>,
+  strict: boolean
+): string[] {
+  return args.map((arg) => renderArgTemplate(arg, variables, strict));
+}
+
+function readJsonPath(value: unknown, path: string): unknown {
+  const normalized = path.replace(/\[(\d+)\]/g, ".$1");
+  return normalized.split(".").reduce<unknown>((current, segment) => {
+    if (segment.length === 0) {
+      return current;
+    }
+
+    if (/^\d+$/.test(segment)) {
+      if (!Array.isArray(current)) {
+        return undefined;
+      }
+      return current[Number(segment)];
+    }
+
+    if (current !== null && typeof current === "object" && segment in current) {
+      return (current as Record<string, unknown>)[segment];
+    }
+
+    return undefined;
+  }, value);
+}
+
+function toCapturedVariableValue(value: unknown, name: string): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  throw new Error(
+    `The command plan capture "${name}" did not resolve to a usable scalar value.`
+  );
+}
+
+function extractCapturedVariables(
+  step: AscCommandStep,
+  json: Record<string, unknown>
+): Record<string, string> {
+  const captured: Record<string, string> = {};
+  for (const capture of step.captures) {
+    const value = readJsonPath(json, capture.jsonPath);
+    if (value === undefined) {
+      throw new Error(
+        `The command plan capture "${capture.name}" could not be found at ${capture.jsonPath}.`
+      );
+    }
+    captured[capture.name] = toCapturedVariableValue(value, capture.name);
+  }
+
+  return captured;
+}
+
+function summarizeGenericPayload(payload: Record<string, unknown>): string[] {
+  const explicitSummary =
+    findFirstString(payload, ["summary", "message", "status"]) ?? null;
+  const entries = collectScalarEntries(payload);
+
+  const lines: string[] = [];
+  if (explicitSummary) {
+    lines.push(explicitSummary);
+  }
+
+  if (lines.length === 0) {
+    lines.push(
+      ...entries
+        .slice(0, 4)
+        .map((entry) => `${humanizePath(entry.path)}: ${entry.value}`)
+    );
+  }
+
+  return lines.length > 0 ? Array.from(new Set(lines)) : ["Command completed."];
+}
+
+function extractCommandRecipeFromPlan(plan: ProviderExecutionPlan): AscCommandRecipe {
+  return ascCommandRecipeSchema.parse(plan.rawProviderData.commandRecipe);
+}
+
+function extractCapturedVariablesFromPlan(
+  plan: ProviderExecutionPlan
+): Record<string, string> {
+  const value = plan.rawProviderData.capturedVariables;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === "string" &&
+          typeof entry[1] === "string" &&
+          entry[1].trim().length > 0
+      )
+      .map(([key, item]) => [key, item.trim()])
+  );
+}
+
+function extractStoredOutputsFromPlan(plan: ProviderExecutionPlan): PlannedCommandOutput[] {
+  const value = plan.rawProviderData.commandOutputs;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+    if (typeof record.purpose !== "string" || typeof record.command !== "string") {
+      return [];
+    }
+
+    return [
+      {
+        purpose: record.purpose,
+        command: record.command,
+        stdout: typeof record.stdout === "string" ? record.stdout : "",
+        json: asRecord(record.json) ?? undefined
+      } satisfies PlannedCommandOutput
+    ];
   });
 }
 
@@ -847,11 +1095,11 @@ function extractLocalizedReleaseNotesFromPlan(
   return localizedReleaseNotes;
 }
 
-async function readProcessOutput(
+async function readProcessText(
   binaryPath: string,
   args: string[],
   env: NodeJS.ProcessEnv
-): Promise<AscCommandResult> {
+): Promise<AscTextResult> {
   const child = spawn(binaryPath, args, {
     env,
     stdio: ["ignore", "pipe", "pipe"]
@@ -882,16 +1130,27 @@ async function readProcessOutput(
     );
   }
 
-  const trimmed = stdout.trim();
+  return {
+    args,
+    displayCommand: buildDisplayCommand(binaryPath, args),
+    stdout,
+    stderr
+  };
+}
+
+async function readProcessOutput(
+  binaryPath: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<AscCommandResult> {
+  const result = await readProcessText(binaryPath, args, env);
+  const trimmed = result.stdout.trim();
   const parsed: unknown = trimmed.length > 0 ? JSON.parse(trimmed) : {};
   const json = asRecord(parsed) ?? { data: parsed };
 
   return {
-    args,
-    displayCommand: buildDisplayCommand(binaryPath, args),
-    json,
-    stdout,
-    stderr
+    ...result,
+    json
   };
 }
 
@@ -935,17 +1194,273 @@ export class AppleAscProvider implements ProviderAdapter {
 
   private readonly env: NodeJS.ProcessEnv;
 
+  private readonly commandRecipePlanner?: OpenAiAscCommandRecipePlanner;
+
+  private readonly commandOutputSummarizer?: OpenAiCommandOutputSummarizer;
+
   private readonly releaseNotesTranslator?: OpenAiReleaseNotesTranslator;
+
+  private ascDocsPromise?: Promise<string>;
+
+  private readonly helpTextCache = new Map<string, Promise<string>>();
 
   public constructor(options: AscRuntimeOptions = {}) {
     this.binaryPath = options.binaryPath ?? process.env.ASC_PATH ?? "asc";
     this.env = buildAscEnv(options.env ?? process.env);
     if (options.openAiApiKey) {
+      this.commandRecipePlanner = new OpenAiAscCommandRecipePlanner({
+        apiKey: options.openAiApiKey,
+        model: options.openAiModel
+      });
+      this.commandOutputSummarizer = new OpenAiCommandOutputSummarizer({
+        apiKey: options.openAiApiKey,
+        model: options.openAiModel
+      });
       this.releaseNotesTranslator = new OpenAiReleaseNotesTranslator({
         apiKey: options.openAiApiKey,
         model: options.openAiModel
       });
     }
+  }
+
+  private async getAscDocs(): Promise<string> {
+    if (!this.ascDocsPromise) {
+      this.ascDocsPromise = (async () => {
+        const docsDir = await mkdtemp(join(tmpdir(), "store-agent-asc-docs-"));
+
+        try {
+          await readProcessOutput(
+            this.binaryPath,
+            ["docs", "init", "--path", docsDir, "--force", "--link=false"],
+            this.env
+          );
+
+          const ascReference = await readFile(join(docsDir, "ASC.md"), "utf8");
+          const topLevelHelp = await readProcessText(
+            this.binaryPath,
+            ["--help"],
+            this.env
+          );
+
+          const helpSections = await Promise.all(
+            ASC_DOC_HELP_TOPICS.map(async (topic) => {
+              try {
+                const result = await readProcessText(
+                  this.binaryPath,
+                  [topic, "--help"],
+                  this.env
+                );
+                return `## asc ${topic} --help\n\n\`\`\`text\n${result.stdout.trim()}\n\`\`\``;
+              } catch {
+                return null;
+              }
+            })
+          );
+
+          return [
+            ascReference.trim(),
+            "## Runtime Top-Level Help",
+            `\`\`\`text\n${topLevelHelp.stdout.trim()}\n\`\`\``,
+            ...helpSections.filter(
+              (section): section is string => typeof section === "string"
+            )
+          ].join("\n\n");
+        } finally {
+          await rm(docsDir, { recursive: true, force: true });
+        }
+      })();
+    }
+
+    return this.ascDocsPromise;
+  }
+
+  private async getHelpTextForCommandPath(commandPath: string[]): Promise<string> {
+    const cacheKey = commandPath.join(" ");
+    const cached = this.helpTextCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const promise = readProcessText(
+      this.binaryPath,
+      [...commandPath, "--help"],
+      this.env
+    ).then((result) => result.stdout);
+    this.helpTextCache.set(cacheKey, promise);
+    return promise;
+  }
+
+  private buildBaseVariables(
+    app: ResolveRequestContext["app"],
+    request: NormalizedActionRequest
+  ): Record<string, string> {
+    const variables: Record<string, string> = {
+      appId: app.appId,
+      appAlias: request.appAlias,
+      appReference: request.appReference,
+      platform: app.platform
+    };
+
+    if (request.version) {
+      variables.version = request.version;
+    }
+
+    return variables;
+  }
+
+  private async validateCommandRecipe(recipe: AscCommandRecipe): Promise<{
+    requiresConfirmation: boolean;
+    firstWriteStepIndex: number;
+  }> {
+    let requiresConfirmation = false;
+    let firstWriteStepIndex = recipe.steps.length;
+
+    for (const [index, step] of recipe.steps.entries()) {
+      const commandPath = parseCommandPath(step.args);
+      if (commandPath.length === 0) {
+        throw new Error(
+          `The generated command recipe contains an invalid step with no asc subcommand path at step ${index + 1}.`
+        );
+      }
+
+      const helpText = await this.getHelpTextForCommandPath(commandPath);
+      const supportedFlags = new Set(
+        (helpText.match(/--[a-z0-9][a-z0-9-]*/gi) ?? []).map((flag) =>
+          flag.toLowerCase()
+        )
+      );
+      for (const flag of extractLongFlags(step.args)) {
+        if (!supportedFlags.has(flag.toLowerCase())) {
+          throw new Error(
+            `The generated command recipe uses unsupported flag ${flag} for "asc ${commandPath.join(" ")}".`
+          );
+        }
+      }
+
+      const stepReturnsJson = step.args.some(
+        (arg, argIndex) =>
+          arg === "--output"
+            ? step.args[argIndex + 1] === "json"
+            : arg.toLowerCase() === "--output=json"
+      );
+      if (step.captures.length > 0 && !stepReturnsJson) {
+        throw new Error(
+          `The generated command recipe must use --output json when step ${index + 1} captures variables.`
+        );
+      }
+
+      if (isWriteCommandArgs(step.args)) {
+        requiresConfirmation = true;
+        firstWriteStepIndex = Math.min(firstWriteStepIndex, index);
+      }
+    }
+
+    return { requiresConfirmation, firstWriteStepIndex };
+  }
+
+  private async executeRecipeSteps(input: {
+    recipe: AscCommandRecipe;
+    baseVariables: Record<string, string>;
+    initialVariables?: Record<string, string>;
+    startIndex?: number;
+    endIndex?: number;
+  }): Promise<CommandExecutionState> {
+    const variables: Record<string, string> = {
+      ...input.baseVariables,
+      ...(input.initialVariables ?? {})
+    };
+    const outputs: PlannedCommandOutput[] = [];
+
+    for (let index = input.startIndex ?? 0; index < (input.endIndex ?? input.recipe.steps.length); index += 1) {
+      const step = input.recipe.steps[index];
+      const renderedArgs = renderStepArgs(step.args, variables, true);
+      const wantsJson = step.captures.length > 0 || renderedArgs.some(
+        (arg, argIndex) =>
+          arg === "--output"
+            ? renderedArgs[argIndex + 1] === "json"
+            : arg.toLowerCase() === "--output=json"
+      );
+
+      if (wantsJson) {
+        const result = await readProcessOutput(
+          this.binaryPath,
+          renderedArgs,
+          this.env
+        );
+        Object.assign(variables, extractCapturedVariables(step, result.json));
+        outputs.push({
+          purpose: step.purpose,
+          command: result.displayCommand,
+          stdout: result.stdout,
+          json: result.json
+        });
+        continue;
+      }
+
+      const result = await readProcessText(this.binaryPath, renderedArgs, this.env);
+      outputs.push({
+        purpose: step.purpose,
+        command: result.displayCommand,
+        stdout: result.stdout
+      });
+    }
+
+    return { variables, outputs };
+  }
+
+  private buildPreviewCommands(
+    recipe: AscCommandRecipe,
+    variables: Record<string, string>
+  ): string[] {
+    return recipe.steps.map((step) =>
+      buildDisplayCommand(
+        this.binaryPath,
+        renderStepArgs(step.args, variables, false)
+      )
+    );
+  }
+
+  private async summarizeReadOnlyOutputs(
+    rawCommand: string,
+    fallbackSummary: string,
+    fallbackDetails: string[],
+    outputs: PlannedCommandOutput[]
+  ): Promise<{
+    executionSummary: string;
+    validationSummary: string[];
+  }> {
+    if (outputs.length === 0) {
+      return {
+        executionSummary: fallbackSummary,
+        validationSummary: fallbackDetails
+      };
+    }
+
+    if (this.commandOutputSummarizer) {
+      try {
+        const summary = await this.commandOutputSummarizer.summarizeOutputs({
+          rawCommand,
+          outputs
+        });
+        return {
+          executionSummary: summary.shortSummary,
+          validationSummary: summary.detailLines
+        };
+      } catch {
+        // Fall through to heuristic summary below.
+      }
+    }
+
+    const lastJson = [...outputs]
+      .reverse()
+      .find((output) => output.json)?.json;
+
+    return {
+      executionSummary: fallbackSummary,
+      validationSummary: lastJson
+        ? summarizeGenericPayload(lastJson).slice(0, 6)
+        : fallbackDetails
+    };
   }
 
   public async resolve(
@@ -972,6 +1487,77 @@ export class AppleAscProvider implements ProviderAdapter {
         executionSummary: `Status for ${request.appAlias}: ${statusSummary[0]}`,
         rawProviderData: {
           status: status.json
+        }
+      });
+    }
+
+    if (request.actionType === "run_asc_commands") {
+      if (!this.commandRecipePlanner) {
+        throw new Error(
+          "OpenAI command planning is not configured for dynamic asc command generation."
+        );
+      }
+
+      const recipe = await this.commandRecipePlanner.planRecipe({
+        rawCommand: request.rawCommand,
+        appReference: request.appReference,
+        appAlias: request.appAlias,
+        appId: app.appId,
+        platform: app.platform,
+        version: request.version,
+        notes: request.notes ?? request.releaseNotes,
+        ascDocs: await this.getAscDocs()
+      });
+
+      if (recipe.needsClarification) {
+        throw new Error(
+          recipe.clarificationQuestion ??
+            "The asc command plan needs one more detail before it can proceed."
+        );
+      }
+
+      const { requiresConfirmation, firstWriteStepIndex } =
+        await this.validateCommandRecipe(recipe);
+      const baseVariables = this.buildBaseVariables(app, request);
+      const executionState = await this.executeRecipeSteps({
+        recipe,
+        baseVariables,
+        endIndex: requiresConfirmation ? firstWriteStepIndex : undefined
+      });
+      const previewCommands = this.buildPreviewCommands(
+        recipe,
+        executionState.variables
+      );
+      const summaries = requiresConfirmation
+        ? {
+            executionSummary: recipe.executionSummary,
+            validationSummary: recipe.validationSummary
+          }
+        : await this.summarizeReadOnlyOutputs(
+            request.rawCommand,
+            recipe.executionSummary,
+            recipe.validationSummary,
+            executionState.outputs
+          );
+
+      return providerExecutionPlanSchema.parse({
+        provider: request.provider,
+        actionType: request.actionType,
+        appAlias: request.appAlias,
+        appId: app.appId,
+        version: request.version ?? executionState.variables.version,
+        releaseMode: request.releaseMode,
+        buildStrategy: request.buildStrategy,
+        buildId: executionState.variables.buildId,
+        buildNumber: executionState.variables.buildNumber,
+        requiresConfirmation,
+        previewCommands,
+        validationSummary: summaries.validationSummary,
+        executionSummary: summaries.executionSummary,
+        rawProviderData: {
+          commandRecipe: recipe,
+          capturedVariables: executionState.variables,
+          commandOutputs: executionState.outputs
         }
       });
     }
@@ -1284,6 +1870,58 @@ export class AppleAscProvider implements ProviderAdapter {
   public async revalidate(
     context: RevalidateRequestContext
   ): Promise<ProviderExecutionPlan> {
+    if (context.request.actionType === "run_asc_commands") {
+      const recipe = extractCommandRecipeFromPlan(context.previousPlan);
+      const { requiresConfirmation, firstWriteStepIndex } =
+        await this.validateCommandRecipe(recipe);
+
+      if (!requiresConfirmation) {
+        return context.previousPlan;
+      }
+
+      const baseVariables = this.buildBaseVariables(context.app, context.request);
+      const revalidatedState = await this.executeRecipeSteps({
+        recipe,
+        baseVariables,
+        endIndex: firstWriteStepIndex
+      });
+      const previousVariables = extractCapturedVariablesFromPlan(
+        context.previousPlan
+      );
+      const variableNames = Array.from(
+        new Set([
+          ...Object.keys(previousVariables),
+          ...Object.keys(revalidatedState.variables)
+        ])
+      );
+
+      for (const name of variableNames) {
+        if (previousVariables[name] !== revalidatedState.variables[name]) {
+          throw new Error(
+            `The command plan changed ${name} from ${previousVariables[name] ?? "(unset)"} to ${revalidatedState.variables[name] ?? "(unset)"}. Request a fresh approval before proceeding.`
+          );
+        }
+      }
+
+      return providerExecutionPlanSchema.parse({
+        ...context.previousPlan,
+        buildId: revalidatedState.variables.buildId ?? context.previousPlan.buildId,
+        buildNumber:
+          revalidatedState.variables.buildNumber ??
+          context.previousPlan.buildNumber,
+        previewCommands: this.buildPreviewCommands(
+          recipe,
+          revalidatedState.variables
+        ),
+        requiresConfirmation,
+        rawProviderData: {
+          ...context.previousPlan.rawProviderData,
+          capturedVariables: revalidatedState.variables,
+          commandOutputs: revalidatedState.outputs
+        }
+      });
+    }
+
     const latestPlan = await this.resolve({
       app: context.app,
       request: context.request
@@ -1303,6 +1941,50 @@ export class AppleAscProvider implements ProviderAdapter {
   }
 
   public async execute(context: ExecuteRequestContext) {
+    if (context.request.actionType === "run_asc_commands") {
+      const recipe = extractCommandRecipeFromPlan(context.plan);
+      const { requiresConfirmation, firstWriteStepIndex } =
+        await this.validateCommandRecipe(recipe);
+
+      if (!requiresConfirmation) {
+        throw new Error("The dynamic asc command plan is not a write action.");
+      }
+
+      const baseVariables = this.buildBaseVariables(context.app, context.request);
+      const initialVariables = extractCapturedVariablesFromPlan(context.plan);
+      const storedOutputs = extractStoredOutputsFromPlan(context.plan);
+      const executionState = await this.executeRecipeSteps({
+        recipe,
+        baseVariables,
+        initialVariables,
+        startIndex: firstWriteStepIndex
+      });
+      const allOutputs = [...storedOutputs, ...executionState.outputs];
+
+      let summary = context.plan.executionSummary;
+      if (this.commandOutputSummarizer) {
+        try {
+          const outputSummary =
+            await this.commandOutputSummarizer.summarizeOutputs({
+              rawCommand: context.request.rawCommand,
+              outputs: allOutputs
+            });
+          summary = outputSummary.shortSummary;
+        } catch {
+          // Fall back to the plan summary.
+        }
+      }
+
+      return providerExecutionResultSchema.parse({
+        ok: true,
+        summary,
+        rawResult: {
+          commandOutputs: allOutputs,
+          capturedVariables: executionState.variables
+        }
+      });
+    }
+
     const version = requireVersion(context.request);
 
     if (context.request.actionType === "cancel_review_submission") {

@@ -64,6 +64,7 @@ function buildCommandBlocks(commands: string[]): KnownBlock[] {
 
 function formatActionType(actionType: NormalizedActionRequest["actionType"]): string {
   return {
+    run_asc_commands: "Run ASC command plan",
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",
@@ -211,15 +212,32 @@ export function buildApprovalBlocks(
     approvalToken: input.approvalToken
   });
   const isCancellation = input.request.actionType === "cancel_review_submission";
+  const isDynamicPlan = input.request.actionType === "run_asc_commands";
   const confirmButtonText = isCancellation
     ? "Confirm cancellation"
+    : isDynamicPlan
+      ? "Confirm commands"
     : "Confirm release";
-  const confirmTitle = isCancellation ? "Cancel submission?" : "Submit release?";
+  const confirmTitle = isCancellation
+    ? "Cancel submission?"
+    : isDynamicPlan
+      ? "Queue ASC commands?"
+      : "Submit release?";
   const confirmBody = isCancellation
     ? "This will queue the confirmed App Store Connect submission cancellation."
+    : isDynamicPlan
+      ? "This will queue the approved ASC command plan for execution."
     : "This will queue the confirmed App Store Connect write action.";
-  const confirmActionText = isCancellation ? "Cancel submission" : "Submit";
-  const summaryLabel = isCancellation ? "Submission summary" : "Validation summary";
+  const confirmActionText = isCancellation
+    ? "Cancel submission"
+    : isDynamicPlan
+      ? "Queue commands"
+      : "Submit";
+  const summaryLabel = isCancellation
+    ? "Submission summary"
+    : isDynamicPlan
+      ? "Plan summary"
+      : "Validation summary";
 
   return [
     {
@@ -320,8 +338,14 @@ export function buildReadOnlyBlocks(
       ? "Status summary"
       : request.actionType === "cancel_review_submission"
         ? "Submission summary"
+      : request.actionType === "run_asc_commands"
+        ? "Result summary"
       : "Validation summary";
-  const summaryLineCount = request.actionType === "release_status" ? 8 : 4;
+  const summaryLineCount =
+    request.actionType === "release_status" ||
+    request.actionType === "run_asc_commands"
+      ? 8
+      : 4;
 
   return [
     {

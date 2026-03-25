@@ -108,7 +108,10 @@ export class ReleaseExecutor {
       await this.slackClient.chat.postMessage({
         channel: approval.channelId,
         thread_ts: approval.threadTs ?? undefined,
-        text: `<@${approval.requestedBy}> Release execution failed: ${message}`
+        text:
+          approval.actionType === "run_asc_commands"
+            ? `<@${approval.requestedBy}> ASC command execution failed: ${message}`
+            : `<@${approval.requestedBy}> Release execution failed: ${message}`
       });
 
       throw error;

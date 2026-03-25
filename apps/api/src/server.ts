@@ -503,7 +503,10 @@ async function main(): Promise<void> {
         lastExecutionPlan: executionPlan
       });
 
-      if (!isWriteAction(normalizedRequest.actionType)) {
+      if (
+        !executionPlan.requiresConfirmation &&
+        !isWriteAction(normalizedRequest.actionType)
+      ) {
         await postConversationMessage(input.client, target, {
           text: executionPlan.executionSummary,
           blocks: buildReadOnlyBlocks(normalizedRequest, executionPlan)
@@ -974,14 +977,18 @@ async function main(): Promise<void> {
         buildId: approval.executionPlan.buildId ?? null
       });
       await queue.sendReleaseRequest({ approvalId: approval.approvalId });
-      const queuedLabel =
-        approval.actionType === "cancel_review_submission"
-          ? "Cancellation queued"
-          : "Release queued";
-      const revalidationCopy =
-        approval.actionType === "cancel_review_submission"
-          ? "The worker will revalidate the current submission and then run:"
-          : "The worker will revalidate the exact build and then run:";
+          const queuedLabel =
+            approval.actionType === "cancel_review_submission"
+              ? "Cancellation queued"
+              : approval.actionType === "run_asc_commands"
+                ? "ASC command plan queued"
+                : "Release queued";
+          const revalidationCopy =
+            approval.actionType === "cancel_review_submission"
+              ? "The worker will revalidate the current submission and then run:"
+              : approval.actionType === "run_asc_commands"
+                ? "The worker will revalidate the captured preflight variables and then run:"
+                : "The worker will revalidate the exact build and then run:";
 
       await respond({
         replace_original: true,

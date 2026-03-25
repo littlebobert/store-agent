@@ -5,12 +5,12 @@ Slack bot for App Store Connect release operations, designed for Azure deploymen
 ## What it does
 
 - Accepts English or Japanese release requests through `/asc`, bot DMs, or mention-started Slack threads.
-- Uses OpenAI to normalize the request into a typed action plus an app reference, and asks follow-up questions over multiple turns.
-- Uses OpenAI to summarize store status output for Slack.
+- Uses OpenAI to extract the app context from the conversation, then generates an `asc` command recipe from live `ASC.md` and `asc --help` documentation instead of a fixed workflow whitelist.
+- Uses OpenAI to summarize `asc` output for Slack.
 - Resolves the exact configured app alias and App Store Connect target with `asc`.
-- Shows the exact `asc` plan in Slack before any write action runs and requires explicit confirmation.
+- Shows the exact `asc` command plan in Slack before any write action runs and requires explicit confirmation.
 - Queues confirmed jobs through Azure Service Bus and executes them in a worker.
-- Supports cancellation of App Store review submissions by app and version.
+- Revalidates captured preflight variables before the worker executes an approved write plan.
 
 ## Workspace
 
@@ -33,6 +33,6 @@ Slack bot for App Store Connect release operations, designed for Azure deploymen
 
 ## Notes
 
-- Apple App Store Connect flows are implemented in v1 through `asc`.
+- Apple App Store Connect operations are implemented in v1 through `asc` command recipes generated from the installed CLI docs.
 - Google Play is intentionally left behind the same provider interface and can be added next without changing the Slack approval flow.
 - Both the API and worker containers install `asc` via the official install script during image build.
