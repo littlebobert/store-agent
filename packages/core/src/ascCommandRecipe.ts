@@ -53,6 +53,10 @@ export type OpenAiCommandOutputSummary = z.infer<
   typeof commandOutputSummarySchema
 >;
 
+const commandPathSelectionSchema = z.object({
+  commandPaths: z.array(z.string().trim().min(1)).min(1).max(8)
+});
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -235,6 +239,25 @@ function normalizeRecipeOutput(value: unknown): unknown {
   };
 }
 
+function normalizeCommandPathList(value: unknown): string[] {
+  const record = asRecord(value) ?? {};
+  const rawPaths = Array.isArray(record.commandPaths)
+    ? record.commandPaths
+    : Array.isArray(record.paths)
+      ? record.paths
+      : Array.isArray(record.commands)
+        ? record.commands
+        : [];
+
+  return Array.from(
+    new Set(
+      rawPaths
+        .flatMap((item) => (typeof item === "string" ? [item.trim()] : []))
+        .filter((item) => item.length > 0)
+    )
+  );
+}
+
 function extractJsonPayload(content: string): string {
   const fenced = content.match(/```json\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
@@ -272,7 +295,65 @@ export class OpenAiAscCommandRecipePlanner {
     this.model = options.model ?? "gpt-5.4";
   }
 
-  public async planRecipe(input: {
+  public async selectCommandPaths(input: {
+    rawCommand: string;
+    appReference: string;
+    appAlias: string;
+    appId: string;
+    platform: string;
+    version?: string;
+    notes?: string;
+    commandCatalog: string[];
+  }): Promise<string[]> {
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You select the most relevant asc command paths for an App Store Connect request.",
+            "Return JSON only with key commandPaths.",
+            "Use only command paths from the provided commandCatalog.",
+            "Prefer 1-6 paths.",
+            "Include both the top-level command group and the most likely nested subcommands when useful.",
+            "For ratings questions, prefer reviews and reviews ratings.",
+            "For release status questions, prefer versions, versions list, and versions get when available.",
+            "Do not invent command paths that are not in the catalog."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            rawCommand: input.rawCommand,
+            resolvedAppContext: {
+              appReference: input.appReference,
+              appAlias: input.appAlias,
+              appId: input.appId,
+              platform: input.platform,
+              version: input.version ?? null,
+              notes: input.notes ?? null
+            },
+            commandCatalog: input.commandCatalog
+          })
+        }
+      ]
+    });
+
+    const content = completion.choices[0]?.message.content;
+    if (!content) {
+      throw new Error("OpenAI did not return command path selections.");
+    }
+
+    return commandPathSelectionSchema.parse({
+      commandPaths: normalizeCommandPathList(
+        JSON.parse(extractJsonPayload(content))
+      )
+    }).commandPaths;
+  }
+
+  private async requestRecipe(input: {
     rawCommand: string;
     appReference: string;
     appAlias: string;
@@ -281,6 +362,8 @@ export class OpenAiAscCommandRecipePlanner {
     version?: string;
     notes?: string;
     ascDocs: string;
+    previousRecipe?: AscCommandRecipe;
+    validationError?: string;
   }): Promise<AscCommandRecipe> {
     const completion = await this.client.chat.completions.create({
       model: this.model,
@@ -301,6 +384,9 @@ export class OpenAiAscCommandRecipePlanner {
             "If the user asks for average rating or rating counts, prefer asc reviews ratings.",
             "For asc reviews ratings, use the ratings subcommand itself with flags like --app, --country, --all, --output, --pretty, and --workers only when needed.",
             "Do not use asc reviews get for aggregate rating questions.",
+            "For release status or current version status questions, prefer asc versions list with --app, optional --version, optional --platform, and --output json.",
+            "If you need richer details for one version, first use asc versions list to capture versionId, then use asc versions get --version-id ...",
+            "Do not invent asc versions view; use asc versions list or asc versions get.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "Every step must include a short purpose string and an args array.",
             "Use the key steps for the ordered command list; do not rename it to commands or another key unless necessary.",
@@ -311,6 +397,9 @@ export class OpenAiAscCommandRecipePlanner {
             "Put all discovery and read-only steps before any mutating step.",
             "Set requiresConfirmation to true if any step mutates App Store Connect state; otherwise false.",
             "If the request is missing needed information, set needsClarification to true and ask one concise question.",
+            input.validationError
+              ? "You are repairing a previously generated recipe after validation failed. Fix the command paths or flags without changing the operator's intent."
+              : "Generate the best matching recipe on the first try.",
             "Do not invent unsupported flags or values.",
             "Be concise in intentSummary, executionSummary, and validationSummary."
           ].join(" ")
@@ -327,7 +416,9 @@ export class OpenAiAscCommandRecipePlanner {
               version: input.version ?? null,
               notes: input.notes ?? null
             },
-            ascDocs: truncateForPrompt(input.ascDocs)
+            ascDocs: truncateForPrompt(input.ascDocs),
+            previousRecipe: input.previousRecipe ?? null,
+            validationError: input.validationError ?? null
           })
         }
       ]
@@ -341,6 +432,34 @@ export class OpenAiAscCommandRecipePlanner {
     return ascCommandRecipeSchema.parse(
       normalizeRecipeOutput(JSON.parse(extractJsonPayload(content)))
     );
+  }
+
+  public async planRecipe(input: {
+    rawCommand: string;
+    appReference: string;
+    appAlias: string;
+    appId: string;
+    platform: string;
+    version?: string;
+    notes?: string;
+    ascDocs: string;
+  }): Promise<AscCommandRecipe> {
+    return this.requestRecipe(input);
+  }
+
+  public async repairRecipe(input: {
+    rawCommand: string;
+    appReference: string;
+    appAlias: string;
+    appId: string;
+    platform: string;
+    version?: string;
+    notes?: string;
+    ascDocs: string;
+    previousRecipe: AscCommandRecipe;
+    validationError: string;
+  }): Promise<AscCommandRecipe> {
+    return this.requestRecipe(input);
   }
 }
 

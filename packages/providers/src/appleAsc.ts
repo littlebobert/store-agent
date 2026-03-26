@@ -78,8 +78,11 @@ const ASC_DOC_HELP_PATHS = [
   ["app-infos"],
   ["builds"],
   ["versions"],
-  ["localizations"],
+  ["versions", "list"],
+  ["versions", "get"],
   ["submit"],
+  ["submit", "status"],
+  ["localizations"],
   ["review"],
   ["validate"],
   ["testflight"],
@@ -417,6 +420,109 @@ function parseCommandPath(args: string[]): string[] {
   return path;
 }
 
+function parseCatalogCommandPath(path: string): string[] {
+  return path
+    .split(/\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+function commandPathKey(path: string[]): string {
+  return path.join(" ");
+}
+
+function dedupeCommandPaths(paths: string[][]): string[][] {
+  const seen = new Set<string>();
+  const deduped: string[][] = [];
+
+  for (const path of paths) {
+    if (path.length === 0) {
+      continue;
+    }
+
+    const key = commandPathKey(path);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    deduped.push(path);
+  }
+
+  return deduped;
+}
+
+function expandCommandPathsForContext(
+  selectedPaths: string[][],
+  availablePaths: readonly string[][]
+): string[][] {
+  const groups = new Set(selectedPaths.map((path) => path[0]).filter(Boolean));
+  const expanded: string[][] = [];
+
+  for (const path of selectedPaths) {
+    for (let index = 1; index <= path.length; index += 1) {
+      expanded.push(path.slice(0, index));
+    }
+  }
+
+  for (const path of availablePaths) {
+    if (groups.has(path[0])) {
+      expanded.push([...path]);
+    }
+  }
+
+  return dedupeCommandPaths(expanded);
+}
+
+function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
+  const text = rawCommand.trim();
+  if (text.length === 0) {
+    return [];
+  }
+
+  const suggestions: string[][] = [];
+  if (
+    /\brating\b|\bratings\b|\bstars?\b|平均.*評価|評価.*平均/i.test(text)
+  ) {
+    suggestions.push(["reviews"], ["reviews", "ratings"]);
+  }
+
+  if (
+    /\breview status\b|\brelease status\b|\bstatus of\b|\bcurrent release\b|リリース.*状況|ステータス/i.test(
+      text
+    )
+  ) {
+    suggestions.push(["versions"], ["versions", "list"], ["versions", "get"]);
+  }
+
+  if (
+    /\breviews?\b|customer review|レビュー/i.test(text) &&
+    !/\brating\b|\bratings\b|\bstars?\b/i.test(text)
+  ) {
+    suggestions.push(["reviews"], ["reviews", "list"], ["reviews", "summarizations"]);
+  }
+
+  if (/\bsubmit\b|\breview\b|審査/i.test(text)) {
+    suggestions.push(["submit"], ["versions"], ["versions", "list"]);
+  }
+
+  if (
+    /\brelease notes?\b|what'?s new|locali[sz]|metadata|リリースノート|ローカライズ|メタデータ/i.test(
+      text
+    )
+  ) {
+    suggestions.push(
+      ["versions"],
+      ["versions", "list"],
+      ["versions", "get"],
+      ["localizations"],
+      ["app-info"]
+    );
+  }
+
+  return dedupeCommandPaths(suggestions);
+}
+
 function extractLongFlags(args: string[]): string[] {
   return args
     .filter((arg) => arg.startsWith("--"))
@@ -579,6 +685,10 @@ function extractHelpText(result: AscTextResult): string {
   }
 
   return stdout.length > 0 ? stdout : stderr;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function extractCommandRecipeFromPlan(plan: ProviderExecutionPlan): AscCommandRecipe {
@@ -1228,6 +1338,8 @@ export class AppleAscProvider implements ProviderAdapter {
 
   private ascDocsPromise?: Promise<string>;
 
+  private availableHelpPathsPromise?: Promise<string[][]>;
+
   private readonly helpTextCache = new Map<string, Promise<string>>();
 
   public constructor(options: AscRuntimeOptions = {}) {
@@ -1268,28 +1380,10 @@ export class AppleAscProvider implements ProviderAdapter {
             this.env
           );
 
-          const helpSections = await Promise.all(
-            ASC_DOC_HELP_PATHS.map(async (commandPath) => {
-              try {
-                const result = await readProcessText(
-                  this.binaryPath,
-                  [...commandPath, "--help"],
-                  this.env
-                );
-                return `## asc ${commandPath.join(" ")} --help\n\n\`\`\`text\n${extractHelpText(result)}\n\`\`\``;
-              } catch {
-                return null;
-              }
-            })
-          );
-
           return [
             ascReference.trim(),
             "## Runtime Top-Level Help",
-            `\`\`\`text\n${extractHelpText(topLevelHelp)}\n\`\`\``,
-            ...helpSections.filter(
-              (section): section is string => typeof section === "string"
-            )
+            `\`\`\`text\n${extractHelpText(topLevelHelp)}\n\`\`\``
           ].join("\n\n");
         } finally {
           await rm(docsDir, { recursive: true, force: true });
@@ -1314,6 +1408,145 @@ export class AppleAscProvider implements ProviderAdapter {
     ).then((result) => extractHelpText(result));
     this.helpTextCache.set(cacheKey, promise);
     return promise;
+  }
+
+  private async getAvailableHelpPaths(): Promise<string[][]> {
+    if (!this.availableHelpPathsPromise) {
+      const promise: Promise<string[][]> = (async () => {
+        const results = await Promise.all(
+          ASC_DOC_HELP_PATHS.map(async (commandPath) => {
+            try {
+              await this.getHelpTextForCommandPath([...commandPath]);
+              return [...commandPath] as string[];
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        return results.flatMap((commandPath) =>
+          Array.isArray(commandPath) ? [commandPath] : []
+        );
+      })();
+
+      this.availableHelpPathsPromise = promise;
+    }
+
+    return this.availableHelpPathsPromise ?? Promise.resolve([]);
+  }
+
+  private async buildFocusedAscDocs(selectedPaths: string[][]): Promise<string> {
+    const baseDocs = await this.getAscDocs();
+    const availablePaths = await this.getAvailableHelpPaths();
+    const expandedPaths = expandCommandPathsForContext(
+      selectedPaths,
+      availablePaths
+    );
+    const helpSections = await Promise.all(
+      expandedPaths.map(async (commandPath) => {
+        const helpText = await this.getHelpTextForCommandPath(commandPath);
+        return `## asc ${commandPath.join(" ")} --help\n\n\`\`\`text\n${helpText}\n\`\`\``;
+      })
+    );
+
+    return [baseDocs, ...helpSections].join("\n\n");
+  }
+
+  private async selectCommandPathsForRequest(input: {
+    rawCommand: string;
+    request: NormalizedActionRequest;
+    app: ResolveRequestContext["app"];
+  }): Promise<string[][]> {
+    const availablePaths = await this.getAvailableHelpPaths();
+    const heuristicPaths = suggestCommandPathsFromRequest(input.rawCommand);
+    const planner = this.commandRecipePlanner;
+    if (!planner) {
+      throw new Error(
+        "OpenAI command planning is not configured for dynamic asc command generation."
+      );
+    }
+
+    let modelPaths: string[];
+    try {
+      modelPaths = await planner.selectCommandPaths({
+        rawCommand: input.rawCommand,
+        appReference: input.request.appReference,
+        appAlias: input.request.appAlias,
+        appId: input.app.appId,
+        platform: input.app.platform,
+        version: input.request.version,
+        notes: input.request.notes ?? input.request.releaseNotes,
+        commandCatalog: availablePaths.map((path) => commandPathKey(path))
+      });
+    } catch {
+      modelPaths = [];
+    }
+
+    const selectedPaths = dedupeCommandPaths([
+      ...heuristicPaths,
+      ...modelPaths.map((path) => parseCatalogCommandPath(path))
+    ]);
+
+    if (selectedPaths.length > 0) {
+      return selectedPaths;
+    }
+
+    return dedupeCommandPaths(availablePaths.filter((path) => path.length === 1));
+  }
+
+  private async planRecipeWithRepair(input: {
+    request: NormalizedActionRequest;
+    app: ResolveRequestContext["app"];
+  }): Promise<{
+    recipe: AscCommandRecipe;
+    baseVariables: Record<string, string>;
+  }> {
+    const planner = this.commandRecipePlanner;
+    if (!planner) {
+      throw new Error(
+        "OpenAI command planning is not configured for dynamic asc command generation."
+      );
+    }
+
+    const selectedPaths = await this.selectCommandPathsForRequest({
+      rawCommand: input.request.rawCommand,
+      request: input.request,
+      app: input.app
+    });
+    const focusedDocs = await this.buildFocusedAscDocs(selectedPaths);
+    const baseVariables = this.buildBaseVariables(input.app, input.request);
+
+    let recipe = await planner.planRecipe({
+      rawCommand: input.request.rawCommand,
+      appReference: input.request.appReference,
+      appAlias: input.request.appAlias,
+      appId: input.app.appId,
+      platform: input.app.platform,
+      version: input.request.version,
+      notes: input.request.notes ?? input.request.releaseNotes,
+      ascDocs: focusedDocs
+    });
+
+    if (!recipe.needsClarification) {
+      try {
+        await this.validateCommandRecipe(recipe, baseVariables);
+      } catch (error) {
+        recipe = await planner.repairRecipe({
+          rawCommand: input.request.rawCommand,
+          appReference: input.request.appReference,
+          appAlias: input.request.appAlias,
+          appId: input.app.appId,
+          platform: input.app.platform,
+          version: input.request.version,
+          notes: input.request.notes ?? input.request.releaseNotes,
+          ascDocs: focusedDocs,
+          previousRecipe: recipe,
+          validationError: toErrorMessage(error)
+        });
+      }
+    }
+
+    return { recipe, baseVariables };
   }
 
   private buildBaseVariables(
@@ -1526,21 +1759,9 @@ export class AppleAscProvider implements ProviderAdapter {
     }
 
     if (request.actionType === "run_asc_commands") {
-      if (!this.commandRecipePlanner) {
-        throw new Error(
-          "OpenAI command planning is not configured for dynamic asc command generation."
-        );
-      }
-
-      const recipe = await this.commandRecipePlanner.planRecipe({
-        rawCommand: request.rawCommand,
-        appReference: request.appReference,
-        appAlias: request.appAlias,
-        appId: app.appId,
-        platform: app.platform,
-        version: request.version,
-        notes: request.notes ?? request.releaseNotes,
-        ascDocs: await this.getAscDocs()
+      const { recipe, baseVariables } = await this.planRecipeWithRepair({
+        request,
+        app
       });
 
       if (recipe.needsClarification) {
@@ -1550,7 +1771,6 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const baseVariables = this.buildBaseVariables(app, request);
       const { requiresConfirmation, firstWriteStepIndex } =
         await this.validateCommandRecipe(recipe, baseVariables);
       const executionState = await this.executeRecipeSteps({
