@@ -174,7 +174,11 @@ function inferActionTypeFromCommandText(
       normalized
     );
   const mentionsCreateOrPrepare =
-    /\b(create|prepare)\b.*\b(release|review|submission)\b|\bnew release\b|\bcreate\b.*\bversion\b|\battach\b.*\b(testflight|build)\b|リリース.*(作成|準備)|バージョン.*作成|TestFlight.*(添付|追加)|ビルド.*(添付|追加)/i.test(
+    /\b(create|prepare)\b.*\b(release|review|submission)\b|\bnew release\b|\bcreate\b.*\bversion\b|リリース.*(作成|準備)|バージョン.*作成/i.test(
+      normalized
+    );
+  const mentionsAttachBuild =
+    /\battach\b.*\b(testflight|build)\b|TestFlight.*(添付|追加)|ビルド.*(添付|追加)/i.test(
       normalized
     );
   const mentionsSubmitForReview =
@@ -184,10 +188,21 @@ function inferActionTypeFromCommandText(
 
   if (
     hasExplicitVersion &&
+    mentionsAttachBuild &&
+    !mentionsCreateOrPrepare &&
+    !mentionsSubmitForReview &&
+    !mentionsReleaseNotes &&
+    !mentionsLocalization
+  ) {
+    return "run_asc_commands";
+  }
+
+  if (
+    hasExplicitVersion &&
     (
       mentionsCreateOrPrepare ||
       (mentionsSubmitForReview &&
-        (mentionsReleaseNotes || mentionsLocalization || /\battach\b.*\b(testflight|build)\b/i.test(normalized))) ||
+        (mentionsReleaseNotes || mentionsLocalization || mentionsAttachBuild)) ||
       ((mentionsReleaseNotes || mentionsLocalization) &&
         /\b(release|review|submit|version|testflight|build|apple|app store)\b|リリース|審査|バージョン|TestFlight|ビルド/i.test(
           normalized
@@ -456,11 +471,12 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Use prepare_release_for_review when the operator wants to create or update an App Store version, add release notes, localize them, attach the latest TestFlight build, validate, or submit for review.",
+            "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
             "Use release_status when the operator is asking about current release or review status.",
             "Use run_asc_commands for all other App Store Connect workflows and read-only queries.",
+            "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",
@@ -526,11 +542,12 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Use prepare_release_for_review when the operator wants to create or update an App Store version, add release notes, localize them, attach the latest TestFlight build, validate, or submit for review.",
+            "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
             "Use release_status when the operator is asking about current release or review status.",
             "Use run_asc_commands for all other App Store Connect workflows and read-only queries.",
+            "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",
