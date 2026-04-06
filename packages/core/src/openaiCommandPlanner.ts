@@ -186,6 +186,37 @@ function inferActionTypeFromCommandText(
       normalized
     );
 
+  const mentionsForReview = /\bfor\s+review\b|審査(に)?提出|審査申請/i.test(
+    normalized
+  );
+
+  const mentionsPostApprovalCustomerRelease =
+    /\bpending\s+developer\s+release\b|\brelease\s+(?:it\s+)?(?:to|on)\s+(?:the\s+)?app\s+store\b|\bgo\s+live\b|\brelease\s+to\s+customers\b|\balready\s+approved\b|\bapproved\b.*\brelease\b|\bready\s+for\s+customers\b|\breview\s+passed\b.*\brelease\b|\bデベロッパによるリリース\b|\b配信\b.*\bリリース\b/i.test(
+      normalized
+    );
+
+  if (
+    hasExplicitVersion &&
+    mentionsPostApprovalCustomerRelease &&
+    !mentionsReleaseNotes &&
+    !mentionsLocalization
+  ) {
+    return "release_to_app_store";
+  }
+
+  if (
+    hasExplicitVersion &&
+    /\brelease\b/i.test(normalized) &&
+    !mentionsCreateOrPrepare &&
+    !mentionsSubmitForReview &&
+    !mentionsReleaseNotes &&
+    !mentionsLocalization &&
+    !mentionsForReview &&
+    !/\btestflight\b|\bmetadata\b|\blocali[sz]/i.test(normalized)
+  ) {
+    return "release_to_app_store";
+  }
+
   if (
     hasExplicitVersion &&
     mentionsAttachBuild &&
@@ -224,7 +255,9 @@ function extractVersionFromText(text: string): string | undefined {
     /\bversion\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
     /\bver(?:sion)?\.?\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
     /バージョン\s*(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)/i,
-    /\bv\s*(\d+(?:\.\d+){1,}(?:[-+._a-zA-Z0-9]*)?)\b/i
+    /\bv\s*(\d+(?:\.\d+){1,}(?:[-+._a-zA-Z0-9]*)?)\b/i,
+    /\b(?:for|on)\s+iOS\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i,
+    /\biOS\s+(\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?)\b/i
   ];
 
   for (const pattern of patterns) {
@@ -461,7 +494,7 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese App Store Connect operator requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
@@ -472,6 +505,8 @@ export class OpenAiCommandPlanner {
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
+            "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
+            "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
             "Use release_status when the operator is asking about current release or review status.",
@@ -534,7 +569,7 @@ export class OpenAiCommandPlanner {
             "You help operators plan App Store Connect workflows and read-only queries in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
@@ -543,6 +578,8 @@ export class OpenAiCommandPlanner {
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
+            "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
+            "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
             "Use release_status when the operator is asking about current release or review status.",

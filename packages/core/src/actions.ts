@@ -9,6 +9,7 @@ export const actionTypeSchema = z.enum([
   "validate_release",
   "prepare_release_for_review",
   "submit_release_for_review",
+  "release_to_app_store",
   "cancel_review_submission",
   "release_status"
 ]);
@@ -239,6 +240,7 @@ export function summarizeActionRequest(
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
+    release_to_app_store: "Release approved version on the App Store",
     cancel_review_submission: "Cancel review submission",
     release_status: "Check release status"
   }[request.actionType];
@@ -252,6 +254,7 @@ export function isWriteAction(actionType: ActionType): boolean {
   return (
     actionType === "prepare_release_for_review" ||
     actionType === "submit_release_for_review" ||
+    actionType === "release_to_app_store" ||
     actionType === "cancel_review_submission"
   );
 }

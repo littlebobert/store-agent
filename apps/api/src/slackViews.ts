@@ -69,6 +69,7 @@ function formatActionType(actionType: NormalizedActionRequest["actionType"]): st
     validate_release: "Validate release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
+    release_to_app_store: "Release on the App Store",
     cancel_review_submission: "Cancel review submission",
     release_status: "Release status"
   }[actionType];
@@ -213,26 +214,35 @@ export function buildApprovalBlocks(
   });
   const isCancellation = input.request.actionType === "cancel_review_submission";
   const isDynamicPlan = input.request.actionType === "run_asc_commands";
+  const isCustomerRelease = input.request.actionType === "release_to_app_store";
   const confirmButtonText = isCancellation
     ? "Confirm cancellation"
     : isDynamicPlan
       ? "Confirm commands"
-    : "Confirm release";
+      : isCustomerRelease
+        ? "Confirm App Store release"
+        : "Confirm release";
   const confirmTitle = isCancellation
     ? "Cancel submission?"
     : isDynamicPlan
       ? "Queue ASC commands?"
-      : "Submit release?";
+      : isCustomerRelease
+        ? "Release to customers?"
+        : "Submit release?";
   const confirmBody = isCancellation
     ? "This will queue the confirmed App Store Connect submission cancellation."
     : isDynamicPlan
       ? "This will queue the approved ASC command plan for execution."
-    : "This will queue the confirmed App Store Connect write action.";
+      : isCustomerRelease
+        ? "This will queue asc versions release so the approved version goes live on the App Store."
+        : "This will queue the confirmed App Store Connect write action.";
   const confirmActionText = isCancellation
     ? "Cancel submission"
     : isDynamicPlan
       ? "Queue commands"
-      : "Submit";
+      : isCustomerRelease
+        ? "Release"
+        : "Submit";
   const summaryLabel = isCancellation
     ? "Submission summary"
     : isDynamicPlan

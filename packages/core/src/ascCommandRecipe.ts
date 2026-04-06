@@ -386,6 +386,7 @@ export class OpenAiAscCommandRecipePlanner {
             "Do not use asc reviews get for aggregate rating questions.",
             "For release status or current version status questions, prefer asc versions list with --app, optional --version, optional --platform, and --output json.",
             "If you need richer details for one version, first use asc versions list to capture versionId, then use asc versions get --version-id ...",
+            "When the operator wants to release an approved version that is pending developer release, prefer asc versions release with --version-id, --confirm, and --output json after resolving versionId.",
             "Do not invent asc versions view; use asc versions list or asc versions get.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "Every step must include a short purpose string and an args array.",

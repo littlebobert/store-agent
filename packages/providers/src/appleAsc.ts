@@ -80,6 +80,7 @@ const ASC_DOC_HELP_PATHS = [
   ["versions"],
   ["versions", "list"],
   ["versions", "get"],
+  ["versions", "release"],
   ["submit"],
   ["submit", "status"],
   ["localizations"],
@@ -504,6 +505,17 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
 
   if (/\bsubmit\b|\breview\b|審査/i.test(text)) {
     suggestions.push(["submit"], ["versions"], ["versions", "list"]);
+  }
+
+  if (
+    /\bpending\s+developer\s+release\b|\brelease\s+(?:to|on)\s+(?:the\s+)?app\s+store\b|\bgo\s+live\b|\balready\s+approved\b.*\brelease\b/i.test(
+      text
+    )
+  ) {
+    suggestions.push(["versions"], ["versions", "list"], ["versions", "get"], [
+      "versions",
+      "release"
+    ]);
   }
 
   if (
@@ -1023,6 +1035,18 @@ function buildSubmitCancelArgs(versionId: string): string[] {
   ];
 }
 
+function buildVersionReleaseArgs(versionId: string): string[] {
+  return [
+    "versions",
+    "release",
+    "--version-id",
+    versionId,
+    "--confirm",
+    "--output",
+    "json"
+  ];
+}
+
 function escapeStringsValue(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
@@ -1205,6 +1229,21 @@ function summarizeSubmissionCancellationPlan(input: {
   return Array.from(new Set(lines));
 }
 
+function summarizeReleaseToAppStorePlan(input: {
+  version: string;
+  versionState: string;
+  detailsPayload: Record<string, unknown>;
+}): string[] {
+  const lines = summarizeGenericPayload(input.detailsPayload).slice(0, 4);
+  lines.unshift(
+    `Version ${input.version} is ${input.versionState} in App Store Connect.`
+  );
+  lines.push(
+    "Will run asc versions release (--confirm) to publish this version on the App Store (Pending Developer Release → live)."
+  );
+  return lines;
+}
+
 function extractLocalizedReleaseNotesFromPlan(
   plan: ProviderExecutionPlan
 ): LocalizedReleaseNotes {
@@ -1311,6 +1350,10 @@ function ensureWriteAction(
   plan: ProviderExecutionPlan
 ): void {
   if (request.actionType === "cancel_review_submission") {
+    return;
+  }
+
+  if (request.actionType === "release_to_app_store") {
     return;
   }
 
@@ -1865,6 +1908,56 @@ export class AppleAscProvider implements ProviderAdapter {
       });
     }
 
+    if (request.actionType === "release_to_app_store") {
+      const version = requireVersion(request);
+      const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: app.appId,
+        version,
+        platform: app.platform,
+        env: this.env
+      });
+      const resolvedVersion = requireAppStoreVersionRecord(
+        versionRecord,
+        version,
+        app.platform
+      );
+      const versionDetails = await readProcessOutput(
+        this.binaryPath,
+        buildVersionGetArgs(resolvedVersion.versionId),
+        this.env
+      );
+
+      return providerExecutionPlanSchema.parse({
+        provider: request.provider,
+        actionType: request.actionType,
+        appAlias: request.appAlias,
+        appId: app.appId,
+        version,
+        buildStrategy: request.buildStrategy,
+        previewCommands: [
+          versionLookup.displayCommand,
+          versionDetails.displayCommand,
+          buildDisplayCommand(
+            this.binaryPath,
+            buildVersionReleaseArgs(resolvedVersion.versionId)
+          )
+        ],
+        validationSummary: summarizeReleaseToAppStorePlan({
+          version,
+          versionState: resolvedVersion.appStoreState ?? "unknown",
+          detailsPayload: versionDetails.json
+        }),
+        executionSummary: `Release version ${version} on the App Store (customer release after approval).`,
+        rawProviderData: {
+          versionLookup: versionLookup.json,
+          versionId: resolvedVersion.versionId,
+          versionState: resolvedVersion.appStoreState,
+          versionDetails: versionDetails.json
+        }
+      });
+    }
+
     if (request.actionType === "prepare_release_for_review") {
       const version = requireVersion(request);
       const releaseNotes = requireReleaseNotes(request);
@@ -2272,6 +2365,36 @@ export class AppleAscProvider implements ProviderAdapter {
         ok: true,
         summary: `Cancelled the App Store review submission for version ${version}.`,
         rawResult: cancel.json
+      });
+    }
+
+    if (context.request.actionType === "release_to_app_store") {
+      const resolvedVersion = requireAppStoreVersionRecord(
+        (
+          await lookupAppStoreVersion({
+            binaryPath: this.binaryPath,
+            appId: context.app.appId,
+            version,
+            platform: context.app.platform,
+            env: this.env
+          })
+        ).versionRecord,
+        version,
+        context.app.platform
+      );
+      const release = await readProcessOutput(
+        this.binaryPath,
+        buildVersionReleaseArgs(resolvedVersion.versionId),
+        this.env
+      );
+
+      return providerExecutionResultSchema.parse({
+        ok: true,
+        summary: `Released version ${version} on the App Store.`,
+        rawResult: {
+          versionId: resolvedVersion.versionId,
+          release: release.json
+        }
       });
     }
 

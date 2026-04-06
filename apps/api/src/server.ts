@@ -1006,13 +1006,17 @@ async function main(): Promise<void> {
               ? "Cancellation queued"
               : approval.actionType === "run_asc_commands"
                 ? "ASC command plan queued"
-                : "Release queued";
+                : approval.actionType === "release_to_app_store"
+                  ? "App Store customer release queued"
+                  : "Release queued";
           const revalidationCopy =
             approval.actionType === "cancel_review_submission"
               ? "The worker will revalidate the current submission and then run:"
               : approval.actionType === "run_asc_commands"
                 ? "The worker will revalidate the captured preflight variables and then run:"
-                : "The worker will revalidate the exact build and then run:";
+                : approval.actionType === "release_to_app_store"
+                  ? "The worker will revalidate the version and then run:"
+                  : "The worker will revalidate the exact build and then run:";
 
       await respond({
         replace_original: true,
