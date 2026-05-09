@@ -67,6 +67,7 @@ function formatActionType(actionType: NormalizedActionRequest["actionType"]): st
     run_asc_commands: "Run ASC command plan",
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
+    create_draft_release: "Create draft release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
     release_to_app_store: "Release on the App Store",
@@ -215,34 +216,43 @@ export function buildApprovalBlocks(
   const isCancellation = input.request.actionType === "cancel_review_submission";
   const isDynamicPlan = input.request.actionType === "run_asc_commands";
   const isCustomerRelease = input.request.actionType === "release_to_app_store";
+  const isDraftRelease = input.request.actionType === "create_draft_release";
   const confirmButtonText = isCancellation
     ? "Confirm cancellation"
     : isDynamicPlan
       ? "Confirm commands"
       : isCustomerRelease
         ? "Confirm App Store release"
-        : "Confirm release";
+        : isDraftRelease
+          ? "Confirm draft creation"
+          : "Confirm release";
   const confirmTitle = isCancellation
     ? "Cancel submission?"
     : isDynamicPlan
       ? "Queue ASC commands?"
       : isCustomerRelease
         ? "Release to customers?"
-        : "Submit release?";
+        : isDraftRelease
+          ? "Create draft release?"
+          : "Submit release?";
   const confirmBody = isCancellation
     ? "This will queue the confirmed App Store Connect submission cancellation."
     : isDynamicPlan
       ? "This will queue the approved ASC command plan for execution."
       : isCustomerRelease
         ? "This will queue asc versions release so the approved version goes live on the App Store."
-        : "This will queue the confirmed App Store Connect write action.";
+        : isDraftRelease
+          ? "This will queue asc versions create. It will not attach a build, upload release notes, validate, or submit for review."
+          : "This will queue the confirmed App Store Connect write action.";
   const confirmActionText = isCancellation
     ? "Cancel submission"
     : isDynamicPlan
       ? "Queue commands"
       : isCustomerRelease
         ? "Release"
-        : "Submit";
+        : isDraftRelease
+          ? "Create draft"
+          : "Submit";
   const summaryLabel = isCancellation
     ? "Submission summary"
     : isDynamicPlan

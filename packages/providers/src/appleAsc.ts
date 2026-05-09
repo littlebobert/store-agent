@@ -1357,6 +1357,10 @@ function ensureWriteAction(
     return;
   }
 
+  if (request.actionType === "create_draft_release") {
+    return;
+  }
+
   if (
     (request.actionType !== "submit_release_for_review" &&
       request.actionType !== "prepare_release_for_review") ||
@@ -1958,6 +1962,57 @@ export class AppleAscProvider implements ProviderAdapter {
       });
     }
 
+    if (request.actionType === "create_draft_release") {
+      const version = requireVersion(request);
+      const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: app.appId,
+        version,
+        platform: app.platform,
+        env: this.env
+      });
+      const previewCommands = [versionLookup.displayCommand];
+      if (!versionRecord) {
+        previewCommands.push(
+          buildDisplayCommand(
+            this.binaryPath,
+            buildVersionCreateArgs(
+              app.appId,
+              version,
+              app.platform,
+              request.releaseMode
+            )
+          )
+        );
+      }
+
+      return providerExecutionPlanSchema.parse({
+        provider: request.provider,
+        actionType: request.actionType,
+        appAlias: request.appAlias,
+        appId: app.appId,
+        version,
+        releaseMode: request.releaseMode,
+        buildStrategy: request.buildStrategy,
+        requiresConfirmation: true,
+        previewCommands,
+        validationSummary: [
+          versionRecord
+            ? `App Store version ${version} already exists for ${formatPlatformLabel(app.platform)}.`
+            : `Will create empty App Store version ${version} for ${formatPlatformLabel(app.platform)}.`,
+          "No release notes, build attachment, validation, or review submission will be performed."
+        ],
+        executionSummary: versionRecord
+          ? `App Store version ${version} already exists.`
+          : `Create empty App Store version ${version}.`,
+        rawProviderData: {
+          versionLookup: versionLookup.json,
+          versionId: versionRecord?.versionId,
+          versionState: versionRecord?.appStoreState
+        }
+      });
+    }
+
     if (request.actionType === "prepare_release_for_review") {
       const version = requireVersion(request);
       const releaseNotes = requireReleaseNotes(request);
@@ -2394,6 +2449,31 @@ export class AppleAscProvider implements ProviderAdapter {
         rawResult: {
           versionId: resolvedVersion.versionId,
           release: release.json
+        }
+      });
+    }
+
+    if (context.request.actionType === "create_draft_release") {
+      ensureWriteAction(context.request, context.plan);
+      const ensuredVersion = await ensureAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: context.app.appId,
+        version,
+        platform: context.app.platform,
+        releaseMode: context.request.releaseMode,
+        env: this.env
+      });
+
+      return providerExecutionResultSchema.parse({
+        ok: true,
+        summary: ensuredVersion.created
+          ? `Created empty App Store version ${version}.`
+          : `App Store version ${version} already exists.`,
+        rawResult: {
+          versionLookup: ensuredVersion.lookup.json,
+          versionCreate: ensuredVersion.create?.json,
+          versionId: ensuredVersion.versionRecord.versionId,
+          versionState: ensuredVersion.versionRecord.appStoreState
         }
       });
     }

@@ -141,6 +141,28 @@ function looksLikeVersionString(value: string): boolean {
   return /^\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?$/.test(value);
 }
 
+function looksLikeDraftReleaseRequest(text: string): boolean {
+  const normalized = text.trim();
+  if (!extractVersionFromText(normalized)) {
+    return false;
+  }
+
+  const mentionsCreateOrPrepare =
+    /\b(create|prepare)\b.*\b(release|review|submission)\b|\bnew release\b|\bcreate\b.*\bversion\b|リリース.*(作成|準備)|バージョン.*作成/i.test(
+      normalized
+    );
+  const mentionsDraftOrEmpty =
+    /\bdraft\b|\bempty\b|\bwithout\b.*\b(release notes?|build)\b|\bno\b.*\b(release notes?|build)\b|下書き/i.test(
+      normalized
+    );
+
+  return (
+    mentionsCreateOrPrepare &&
+    mentionsDraftOrEmpty &&
+    !/\bprepare\b|準備/i.test(normalized)
+  );
+}
+
 function inferActionTypeFromCommandText(
   text: string
 ): PlannerOutput["actionType"] | undefined {
@@ -325,7 +347,7 @@ function normalizePlannerOutput(
   const inferredActionType = inferActionTypeFromCommandText(
     input.latestUserMessage ?? input.rawCommand
   );
-  if (inferredActionType) {
+  if (inferredActionType && record.actionType !== "create_draft_release") {
     record.actionType = inferredActionType;
   } else if (
     record.actionType === undefined &&
@@ -437,6 +459,14 @@ function normalizePlannerOutput(
     record.releaseNotes = record.notes;
   }
 
+  if (
+    record.actionType === "prepare_release_for_review" &&
+    typeof record.releaseNotes !== "string" &&
+    looksLikeDraftReleaseRequest(input.latestUserMessage ?? input.rawCommand)
+  ) {
+    record.actionType = "create_draft_release";
+  }
+
   return record;
 }
 
@@ -494,7 +524,7 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese App Store Connect operator requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
@@ -504,6 +534,7 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
+            "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
             "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
             "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
@@ -569,7 +600,7 @@ export class OpenAiCommandPlanner {
             "You help operators plan App Store Connect workflows and read-only queries in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
@@ -577,6 +608,7 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
+            "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
             "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
             "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",

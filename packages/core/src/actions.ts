@@ -7,6 +7,7 @@ export const actionTypeSchema = z.enum([
   "run_asc_commands",
   "resolve_latest_build",
   "validate_release",
+  "create_draft_release",
   "prepare_release_for_review",
   "submit_release_for_review",
   "release_to_app_store",
@@ -238,6 +239,7 @@ export function summarizeActionRequest(
     run_asc_commands: "Run ASC command plan",
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
+    create_draft_release: "Create draft release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
     release_to_app_store: "Release approved version on the App Store",
@@ -252,6 +254,7 @@ export function summarizeActionRequest(
 
 export function isWriteAction(actionType: ActionType): boolean {
   return (
+    actionType === "create_draft_release" ||
     actionType === "prepare_release_for_review" ||
     actionType === "submit_release_for_review" ||
     actionType === "release_to_app_store" ||
