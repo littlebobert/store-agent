@@ -132,6 +132,52 @@ function buildConversationContextSummary(
   return `${summarizeActionRequest(request)}. ${plan.executionSummary}`;
 }
 
+function inferAliasListPlatform(rawCommand: string): string | undefined {
+  if (/\bios\b|iphone|ipad|app\s*store/i.test(rawCommand)) {
+    return "IOS";
+  }
+
+  if (/\bandroid\b|google\s*play|play\s*store/i.test(rawCommand)) {
+    return "ANDROID";
+  }
+
+  return undefined;
+}
+
+function formatConfiguredAppAliases(input: {
+  provider: string;
+  platform?: string;
+  query?: string;
+  appAliases: AppAliasRecord[];
+}): string {
+  const filterParts = [
+    input.provider,
+    input.platform,
+    input.query && input.query !== "all" ? `matching "${input.query}"` : null
+  ].filter((part): part is string => Boolean(part));
+  const filterLabel = filterParts.join(" ");
+
+  if (input.appAliases.length === 0) {
+    return `No configured app aliases found for ${filterLabel}.`;
+  }
+
+  const lines = input.appAliases
+    .slice(0, 20)
+    .map(
+      (appAlias) =>
+        `- \`${appAlias.alias}\` (${appAlias.provider}, ${appAlias.platform}, app ID \`${appAlias.appId}\`)`
+    );
+  const remainingCount = input.appAliases.length - lines.length;
+  if (remainingCount > 0) {
+    lines.push(`- ...and ${remainingCount} more`);
+  }
+
+  return [
+    `Configured app aliases for ${filterLabel}:`,
+    ...lines
+  ].join("\n");
+}
+
 async function resolveConfiguredApp(
   store: PostgresStore,
   request: PlannedActionRequest
@@ -148,6 +194,28 @@ async function resolveConfiguredApp(
         directMatch.alias
       )
     };
+  }
+
+  const appIdMatches = await store.findAppAliasesByAppId(
+    request.provider,
+    request.appReference
+  );
+
+  if (appIdMatches.length === 1) {
+    const resolvedAppAlias = appIdMatches[0];
+    return {
+      appAlias: resolvedAppAlias,
+      normalizedRequest: finalizeNormalizedActionRequest(
+        request,
+        resolvedAppAlias.alias
+      )
+    };
+  }
+
+  if (appIdMatches.length > 1) {
+    throw new Error(
+      `The app ID "${request.appReference}" matched multiple configured ${request.provider} apps: ${appIdMatches.map((match) => match.alias).join(", ")}. Use the exact app alias.`
+    );
   }
 
   const identifierMatches = await store.findAppAliasesByMetadataIdentifier(
@@ -449,7 +517,7 @@ async function main(): Promise<void> {
             ...session.messages,
             {
               role: "assistant",
-              content: turn.assistantReply
+              content: turn.conversationContextReply ?? turn.assistantReply
             }
           ]
         });
@@ -459,6 +527,49 @@ async function main(): Promise<void> {
           blocks: buildConversationMessageBlocks(
             "Need one more detail",
             turn.assistantReply
+          )
+        });
+        return;
+      }
+
+      if (turn.plannedRequest.actionType === "list_app_aliases") {
+        const platform = inferAliasListPlatform(turn.plannedRequest.rawCommand);
+        const query =
+          turn.plannedRequest.appReference === "all"
+            ? undefined
+            : turn.plannedRequest.appReference;
+        const appAliases = await store.listAppAliases({
+          provider: turn.plannedRequest.provider,
+          platform,
+          query
+        });
+        const slackMessage = formatConfiguredAppAliases({
+          provider: turn.plannedRequest.provider,
+          platform,
+          query,
+          appAliases
+        });
+
+        session = await saveConversationSession({
+          existingSession: session,
+          teamId: session.teamId,
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+          ownerSlackUserId: session.ownerSlackUserId,
+          messages: [
+            ...session.messages,
+            {
+              role: "assistant",
+              content: slackMessage
+            }
+          ]
+        });
+
+        await postConversationMessage(input.client, target, {
+          text: slackMessage,
+          blocks: buildConversationMessageBlocks(
+            "Configured app aliases",
+            slackMessage
           )
         });
         return;

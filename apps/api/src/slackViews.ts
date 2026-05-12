@@ -67,6 +67,7 @@ function formatActionType(actionType: NormalizedActionRequest["actionType"]): st
     run_asc_commands: "Run ASC command plan",
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
+    list_app_aliases: "List app aliases",
     create_draft_release: "Create draft release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",

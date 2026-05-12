@@ -222,6 +222,12 @@ export interface UpsertAppAliasInput {
   metadata?: Record<string, unknown>;
 }
 
+export interface ListAppAliasesInput {
+  provider?: ProviderId;
+  platform?: string;
+  query?: string;
+}
+
 export interface UpsertSlackUserInput {
   slackUserId: string;
   displayName?: string | null;
@@ -285,6 +291,21 @@ function collectAppAliasMetadataIdentifiers(
   }
 
   return [...identifiers];
+}
+
+function appAliasMatchesQuery(appAlias: AppAliasRecord, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0 || normalizedQuery === "all") {
+    return true;
+  }
+
+  return [
+    appAlias.alias,
+    appAlias.appId,
+    appAlias.platform,
+    JSON.stringify(appAlias.metadata),
+    ...collectAppAliasMetadataIdentifiers(appAlias.metadata)
+  ].some((value) => value.toLowerCase().includes(normalizedQuery));
 }
 
 function mapSlackUser(row: Record<string, unknown>): StoredSlackUser {
@@ -433,6 +454,50 @@ export class PostgresStore {
     }
 
     return mapAppAlias(result.rows[0] as Record<string, unknown>);
+  }
+
+  public async findAppAliasesByAppId(
+    provider: ProviderId,
+    appId: string
+  ): Promise<AppAliasRecord[]> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM app_aliases
+        WHERE provider = $1
+          AND app_id = $2
+        ORDER BY alias ASC
+      `,
+      [provider, appId]
+    );
+
+    return result.rows.map((row) =>
+      mapAppAlias(row as Record<string, unknown>)
+    );
+  }
+
+  public async listAppAliases(
+    input: ListAppAliasesInput = {}
+  ): Promise<AppAliasRecord[]> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM app_aliases
+        WHERE ($1::text IS NULL OR provider = $1)
+          AND ($2::text IS NULL OR UPPER(platform) = UPPER($2))
+        ORDER BY provider ASC, platform ASC, alias ASC
+      `,
+      [input.provider ?? null, input.platform ?? null]
+    );
+
+    const appAliases = result.rows.map((row) =>
+      mapAppAlias(row as Record<string, unknown>)
+    );
+    const query = input.query?.trim();
+
+    return query
+      ? appAliases.filter((appAlias) => appAliasMatchesQuery(appAlias, query))
+      : appAliases;
   }
 
   public async findAppAliasesByMetadataIdentifier(

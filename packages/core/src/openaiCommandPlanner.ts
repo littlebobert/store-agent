@@ -56,6 +56,7 @@ const conversationPlannerResponseSchema = z
 
 export interface OpenAiConversationTurnResult {
   assistantReply: string;
+  conversationContextReply?: string;
   plannedRequest: PlannedActionRequest | null;
 }
 
@@ -169,6 +170,14 @@ function inferActionTypeFromCommandText(
   const normalized = text.trim();
   if (normalized.length === 0) {
     return undefined;
+  }
+
+  if (
+    /\b(list|show|what\s+are|available)\b.*\b(app\s+)?aliases?\b|\b(app\s+)?aliases?\b.*\b(list|show|available)\b/i.test(
+      normalized
+    )
+  ) {
+    return "list_app_aliases";
   }
 
   const hasExplicitVersion = Boolean(extractVersionFromText(normalized));
@@ -302,6 +311,48 @@ function normalizeAppReference(value: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function extractLikelyAppReferenceFromText(text: string): string | undefined {
+  const bundleIdMatch = text.match(/\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+){2,}\b/i);
+  if (bundleIdMatch?.[0]) {
+    return bundleIdMatch[0];
+  }
+
+  const appStoreIdMatch = text.match(/\b\d{8,12}\b/);
+  if (appStoreIdMatch?.[0]) {
+    return appStoreIdMatch[0];
+  }
+
+  const platformAdjacentMatch = text.match(
+    /\b([a-z][a-z0-9_-]{1,40})\s+(?:ios|iphone|ipad|android|testflight|app\s*store|google\s*play)\b/i
+  );
+  const candidate = platformAdjacentMatch?.[1];
+  const ignoredTokens = new Set([
+    "latest",
+    "required",
+    "generic",
+    "draft",
+    "release",
+    "version",
+    "testflight",
+    "app",
+    "store",
+    "google",
+    "play"
+  ]);
+
+  if (candidate && !ignoredTokens.has(candidate.toLowerCase())) {
+    return candidate;
+  }
+
+  return undefined;
+}
+
+function requestedGenericReleaseNotes(text: string): boolean {
+  return /\b(make\s+up|generic|placeholder|default)\b.*\brelease notes?\b|\brelease notes?\b.*\b(make\s+up|generic|placeholder|default)\b/i.test(
+    text
+  );
+}
+
 function normalizePlannerOutput(
   value: unknown,
   input: {
@@ -344,9 +395,9 @@ function normalizePlannerOutput(
     }
   }
 
-  const inferredActionType = inferActionTypeFromCommandText(
-    input.latestUserMessage ?? input.rawCommand
-  );
+  const inferredActionType =
+    inferActionTypeFromCommandText(input.latestUserMessage ?? "") ??
+    inferActionTypeFromCommandText(input.rawCommand);
   if (inferredActionType && record.actionType !== "create_draft_release") {
     record.actionType = inferredActionType;
   } else if (
@@ -356,6 +407,29 @@ function normalizePlannerOutput(
     record.actionType = input.previousRequest.actionType;
   } else if (record.actionType === undefined) {
     record.actionType = "run_asc_commands";
+  }
+
+  if (typeof appReference === "string" && typeof record.appReference !== "string") {
+    record.appReference = appReference;
+  }
+
+  if (
+    record.actionType === "list_app_aliases" &&
+    typeof record.appReference !== "string"
+  ) {
+    record.appReference = "all";
+  }
+
+  if (
+    record.actionType !== "list_app_aliases" &&
+    typeof record.appReference !== "string"
+  ) {
+    const extractedAppReference =
+      extractLikelyAppReferenceFromText(input.latestUserMessage ?? "") ??
+      extractLikelyAppReferenceFromText(input.rawCommand);
+    if (extractedAppReference) {
+      record.appReference = extractedAppReference;
+    }
   }
 
   if (typeof appReference !== "string") {
@@ -467,6 +541,14 @@ function normalizePlannerOutput(
     record.actionType = "create_draft_release";
   }
 
+  if (
+    record.actionType === "prepare_release_for_review" &&
+    typeof record.releaseNotes !== "string" &&
+    requestedGenericReleaseNotes(input.rawCommand)
+  ) {
+    record.releaseNotes = "Bug fixes and performance improvements.";
+  }
+
   return record;
 }
 
@@ -524,13 +606,17 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese App Store Connect operator requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, list_app_aliases, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
+            "Use list_app_aliases when the operator asks to list, show, or discover configured app aliases. This is a local configuration lookup, not an asc command.",
+            "For list_app_aliases, infer provider as apple for iOS/App Store aliases and google-play for Android/Google Play aliases. Put any account/team/filter text in appReference; if there is no filter, set appReference to all.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
+            "If the operator provides a short app-like token such as dotsu, treat that token as appReference and do not ask for an exact alias or bundle ID.",
+            "If the operator provides an App Store numeric app ID, use that numeric ID as appReference.",
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
@@ -545,6 +631,7 @@ export class OpenAiCommandPlanner {
             "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
+            "If the operator asks you to make up generic release notes, use a generic source string such as 'Bug fixes and performance improvements.' and do not ask for release notes text.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",
             "Do not reject analytics or ratings questions just because they are not release workflows.",
             "Use manual_after_review unless the user explicitly asks for auto release when approved.",
@@ -600,13 +687,18 @@ export class OpenAiCommandPlanner {
             "You help operators plan App Store Connect workflows and read-only queries in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, list_app_aliases, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
+            "Use list_app_aliases when the operator asks to list, show, or discover configured app aliases. This is a local configuration lookup, not an asc command.",
+            "For list_app_aliases, infer provider as apple for iOS/App Store aliases and google-play for Android/Google Play aliases. Put any account/team/filter text in appReference; if there is no filter, set appReference to all.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
+            "If the operator provides a short app-like token such as dotsu, treat that token as appReference and do not ask for an exact alias or bundle ID.",
+            "If the operator provides an App Store numeric app ID, use that numeric ID as appReference.",
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
+            "When a reply supplies one missing detail, combine it with the earlier request instead of re-asking for details already present in the conversation.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
@@ -619,10 +711,12 @@ export class OpenAiCommandPlanner {
             "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
+            "If the operator asks you to make up generic release notes, use a generic source string such as 'Bug fixes and performance improvements.' and do not ask for release notes text.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",
             "Treat direct requests phrased like 'can you ...' as instructions, not as ambiguity.",
             "Do not reject analytics or ratings questions just because they are not release workflows.",
             "If you still need information, set readyToResolve to false and assistantReply to one concise follow-up question.",
+            "When readyToResolve is false, include plannerOutput with any known fields from the conversation so the next turn can carry them forward.",
             "If all required details are already present, do not ask the user to confirm your interpretation. Set readyToResolve to true.",
             "If you have enough information, set readyToResolve to true, assistantReply to a short confirmation sentence, and plannerOutput to a complete self-contained request object.",
             "When readyToResolve is true, plannerOutput must include every required field needed for the selected action, not just changed fields.",
@@ -652,8 +746,16 @@ export class OpenAiCommandPlanner {
     );
 
     if (!parsed.readyToResolve || !parsed.plannerOutput) {
+      const conversationContextReply = parsed.plannerOutput
+        ? [
+            parsed.assistantReply,
+            `Known structured request: ${JSON.stringify(parsed.plannerOutput)}`
+          ].join("\n")
+        : undefined;
+
       return {
         assistantReply: parsed.assistantReply,
+        conversationContextReply,
         plannedRequest: null
       };
     }
