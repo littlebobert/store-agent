@@ -661,7 +661,6 @@ export class OpenAiCommandPlanner {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -741,7 +740,6 @@ export class OpenAiCommandPlanner {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -862,7 +860,6 @@ export class OpenAiStatusSummarizer {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -928,7 +925,6 @@ export class OpenAiErrorSummarizer {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -991,7 +987,6 @@ export class OpenAiReleaseNotesTranslator {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {

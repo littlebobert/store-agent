@@ -343,7 +343,6 @@ export class OpenAiAscCommandRecipePlanner {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -408,7 +407,6 @@ export class OpenAiAscCommandRecipePlanner {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -538,7 +536,6 @@ export class OpenAiCommandOutputSummarizer {
     const completion = await this.client.chat.completions.create(
       withOpenAiRequestOptions({
       model: this.model,
-      temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         {
