@@ -74,8 +74,6 @@ interface CommandExecutionState {
 
 const ASC_DOC_HELP_PATHS = [
   ["apps"],
-  ["app-info"],
-  ["app-infos"],
   ["builds"],
   ["versions"],
   ["versions", "list"],
@@ -84,6 +82,8 @@ const ASC_DOC_HELP_PATHS = [
   ["submit"],
   ["submit", "status"],
   ["localizations"],
+  ["localizations", "list"],
+  ["localizations", "upload"],
   ["review"],
   ["validate"],
   ["testflight"],
@@ -457,12 +457,16 @@ function expandCommandPathsForContext(
   selectedPaths: string[][],
   availablePaths: readonly string[][]
 ): string[][] {
+  const availableKeys = new Set(availablePaths.map((path) => commandPathKey(path)));
   const groups = new Set(selectedPaths.map((path) => path[0]).filter(Boolean));
   const expanded: string[][] = [];
 
   for (const path of selectedPaths) {
     for (let index = 1; index <= path.length; index += 1) {
-      expanded.push(path.slice(0, index));
+      const prefix = path.slice(0, index);
+      if (availableKeys.has(commandPathKey(prefix))) {
+        expanded.push(prefix);
+      }
     }
   }
 
@@ -528,7 +532,8 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
       ["versions", "list"],
       ["versions", "get"],
       ["localizations"],
-      ["app-info"]
+      ["localizations", "list"],
+      ["localizations", "upload"]
     );
   }
 
@@ -909,15 +914,15 @@ function buildVersionGetArgs(versionId: string): string[] {
   ];
 }
 
-function buildAppInfoGetArgs(input: {
+function buildLocalizationsListArgs(input: {
   appId: string;
   versionId?: string;
 }): string[] {
-  const args = ["app-info", "get"];
+  const args = ["localizations", "list"];
   if (input.versionId) {
-    args.push("--version-id", input.versionId);
+    args.push("--version", input.versionId);
   } else {
-    args.push("--app", input.appId);
+    args.push("--app", input.appId, "--type", "app-info");
   }
   args.push("--paginate", "--output", "json");
   return args;
@@ -1363,6 +1368,7 @@ function ensureWriteAction(
 
   if (
     (request.actionType !== "submit_release_for_review" &&
+      request.actionType !== "update_draft_release" &&
       request.actionType !== "prepare_release_for_review") ||
     !plan.buildId
   ) {
@@ -2013,9 +2019,13 @@ export class AppleAscProvider implements ProviderAdapter {
       });
     }
 
-    if (request.actionType === "prepare_release_for_review") {
+    if (
+      request.actionType === "prepare_release_for_review" ||
+      request.actionType === "update_draft_release"
+    ) {
       const version = requireVersion(request);
       const releaseNotes = requireReleaseNotes(request);
+      const updatesExistingDraft = request.actionType === "update_draft_release";
 
       if (!this.releaseNotesTranslator) {
         throw new Error(
@@ -2049,15 +2059,21 @@ export class AppleAscProvider implements ProviderAdapter {
         env: this.env
       });
 
-      const appInfoMetadata = await readProcessOutput(
+      if (updatesExistingDraft && !versionRecord) {
+        throw new Error(
+          `App Store version ${version} was not found for ${formatPlatformLabel(app.platform)}. Create the draft version first, then retry the draft update.`
+        );
+      }
+
+      const localizationMetadata = await readProcessOutput(
         this.binaryPath,
-        buildAppInfoGetArgs({
+        buildLocalizationsListArgs({
           appId: app.appId,
           versionId: versionRecord?.versionId
         }),
         this.env
       );
-      const locales = extractLocales(appInfoMetadata.json);
+      const locales = extractLocales(localizationMetadata.json);
       const localizedReleaseNotes =
         await this.releaseNotesTranslator.translateReleaseNotes({
           baseNotes: releaseNotes,
@@ -2094,7 +2110,7 @@ export class AppleAscProvider implements ProviderAdapter {
       const previewCommands = [
         latestBuild.displayCommand,
         versionLookup.displayCommand,
-        appInfoMetadata.displayCommand
+        localizationMetadata.displayCommand
       ];
       if (!versionRecord) {
         previewCommands.push(
@@ -2133,17 +2149,21 @@ export class AppleAscProvider implements ProviderAdapter {
         buildDisplayCommand(
           this.binaryPath,
           buildValidateArgs(app.appId, previewVersionId, app.platform)
-        ),
-        buildDisplayCommand(
-          this.binaryPath,
-          buildSubmitCreateArgs(
-            app.appId,
-            previewVersionId,
-            buildId,
-            app.platform
-          )
         )
       );
+      if (!updatesExistingDraft) {
+        previewCommands.push(
+          buildDisplayCommand(
+            this.binaryPath,
+            buildSubmitCreateArgs(
+              app.appId,
+              previewVersionId,
+              buildId,
+              app.platform
+            )
+          )
+        );
+      }
 
       return providerExecutionPlanSchema.parse({
         provider: request.provider,
@@ -2166,7 +2186,9 @@ export class AppleAscProvider implements ProviderAdapter {
           buildAlreadyAttached: attachedBuildId === buildId
         }),
         executionSummary: versionRecord
-          ? `Prepared release workflow for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
+          ? updatesExistingDraft
+            ? `Prepared draft update for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
+            : `Prepared release workflow for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
           : `Prepared release workflow to create version ${version} with build ${buildNumber} across ${locales.length} locale(s).`,
         rawProviderData: {
           latestBuild: latestBuild.json,
@@ -2174,7 +2196,7 @@ export class AppleAscProvider implements ProviderAdapter {
           versionId: versionRecord?.versionId,
           versionState: versionRecord?.appStoreState,
           versionDetails: versionDetails?.json,
-          appInfoMetadata: appInfoMetadata.json,
+          localizationMetadata: localizationMetadata.json,
           localizationsDryRun: localizationsDryRun?.json,
           attachedBuildId,
           localizedReleaseNotes,
@@ -2334,6 +2356,7 @@ export class AppleAscProvider implements ProviderAdapter {
 
     if (
       (context.previousPlan.actionType === "submit_release_for_review" ||
+        context.previousPlan.actionType === "update_draft_release" ||
         context.previousPlan.actionType === "prepare_release_for_review") &&
       latestPlan.buildId !== context.previousPlan.buildId
     ) {
@@ -2485,10 +2508,27 @@ export class AppleAscProvider implements ProviderAdapter {
       throw new Error("Execution plan is missing a build ID.");
     }
 
-    if (context.request.actionType === "prepare_release_for_review") {
+    if (
+      context.request.actionType === "prepare_release_for_review" ||
+      context.request.actionType === "update_draft_release"
+    ) {
+      const updatesExistingDraft =
+        context.request.actionType === "update_draft_release";
       const localizedReleaseNotes = extractLocalizedReleaseNotesFromPlan(
         context.plan
       );
+      const existingVersion = await lookupAppStoreVersion({
+        binaryPath: this.binaryPath,
+        appId: context.app.appId,
+        version,
+        platform: context.app.platform,
+        env: this.env
+      });
+      if (updatesExistingDraft && !existingVersion.versionRecord) {
+        throw new Error(
+          `App Store version ${version} was not found for ${formatPlatformLabel(context.app.platform)}. Create the draft version first, then retry the draft update.`
+        );
+      }
       const ensuredVersion = await ensureAppStoreVersion({
         binaryPath: this.binaryPath,
         appId: context.app.appId,
@@ -2534,20 +2574,24 @@ export class AppleAscProvider implements ProviderAdapter {
         buildValidateArgs(context.app.appId, versionId, context.app.platform),
         this.env
       );
-      const submit = await readProcessOutput(
-        this.binaryPath,
-        buildSubmitCreateArgs(
-          context.app.appId,
-          versionId,
-          buildId,
-          context.app.platform
-        ),
-        this.env
-      );
+      const submit = updatesExistingDraft
+        ? null
+        : await readProcessOutput(
+            this.binaryPath,
+            buildSubmitCreateArgs(
+              context.app.appId,
+              versionId,
+              buildId,
+              context.app.platform
+            ),
+            this.env
+          );
 
       return providerExecutionResultSchema.parse({
         ok: true,
-        summary: `Created or updated version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, validated it, and submitted it for App Store review.`,
+        summary: updatesExistingDraft
+          ? `Updated draft version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, and validated it.`
+          : `Created or updated version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, validated it, and submitted it for App Store review.`,
         rawResult: {
           versionLookup: ensuredVersion.lookup.json,
           versionCreate: ensuredVersion.create?.json,
@@ -2556,7 +2600,7 @@ export class AppleAscProvider implements ProviderAdapter {
           localizationsUpload: localizationResults.upload.json,
           attachBuild: attachBuild?.json,
           validation: validation.json,
-          submit: submit.json
+          submit: submit?.json
         }
       });
     }

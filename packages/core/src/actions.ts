@@ -8,6 +8,7 @@ export const actionTypeSchema = z.enum([
   "resolve_latest_build",
   "validate_release",
   "list_app_aliases",
+  "update_draft_release",
   "create_draft_release",
   "prepare_release_for_review",
   "submit_release_for_review",
@@ -90,7 +91,8 @@ export const plannerOutputSchema = plannerOutputObjectSchema.superRefine(
     }
 
     if (
-      value.actionType === "prepare_release_for_review" &&
+      (value.actionType === "prepare_release_for_review" ||
+        value.actionType === "update_draft_release") &&
       !value.releaseNotes
     ) {
       ctx.addIssue({
@@ -241,6 +243,7 @@ export function summarizeActionRequest(
     resolve_latest_build: "Resolve latest build",
     validate_release: "Validate release",
     list_app_aliases: "List configured app aliases",
+    update_draft_release: "Update draft release",
     create_draft_release: "Create draft release",
     prepare_release_for_review: "Prepare release for review",
     submit_release_for_review: "Submit release for review",
@@ -257,6 +260,7 @@ export function summarizeActionRequest(
 export function isWriteAction(actionType: ActionType): boolean {
   return (
     actionType === "create_draft_release" ||
+    actionType === "update_draft_release" ||
     actionType === "prepare_release_for_review" ||
     actionType === "submit_release_for_review" ||
     actionType === "release_to_app_store" ||

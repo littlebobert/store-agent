@@ -251,6 +251,18 @@ function inferActionTypeFromCommandText(
   if (
     hasExplicitVersion &&
     mentionsAttachBuild &&
+    mentionsReleaseNotes &&
+    !mentionsSubmitForReview &&
+    /\bdraft\b|\bfill(?:\s+it)?\s+in\b|\bupdate\b|\buse\s+the\s+draft\b/i.test(
+      normalized
+    )
+  ) {
+    return "update_draft_release";
+  }
+
+  if (
+    hasExplicitVersion &&
+    mentionsAttachBuild &&
     !mentionsCreateOrPrepare &&
     !mentionsSubmitForReview &&
     !mentionsReleaseNotes &&
@@ -542,7 +554,8 @@ function normalizePlannerOutput(
   }
 
   if (
-    record.actionType === "prepare_release_for_review" &&
+    (record.actionType === "prepare_release_for_review" ||
+      record.actionType === "update_draft_release") &&
     typeof record.releaseNotes !== "string" &&
     requestedGenericReleaseNotes(input.rawCommand)
   ) {
@@ -606,7 +619,7 @@ export class OpenAiCommandPlanner {
             "You turn English or Japanese App Store Connect operator requests into a strict JSON object.",
             "Never invent app IDs or build IDs.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, list_app_aliases, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, list_app_aliases, update_draft_release, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
@@ -621,7 +634,9 @@ export class OpenAiCommandPlanner {
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
+            "Use update_draft_release when the operator wants to update an existing draft version by attaching a TestFlight build or uploading localized release notes, without submitting for review.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
+            "If the operator says the version is already in draft mode or says to use the draft, do not ask whether to create/update the version; use update_draft_release.",
             "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
             "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
@@ -687,7 +702,7 @@ export class OpenAiCommandPlanner {
             "You help operators plan App Store Connect workflows and read-only queries in a multi-turn Slack conversation.",
             "Use the conversation history plus any previous structured request to carry forward unchanged details unless the user changes them.",
             "Supported providers: apple, google-play.",
-            "Supported actionType values: run_asc_commands, list_app_aliases, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
+            "Supported actionType values: run_asc_commands, list_app_aliases, update_draft_release, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
             "Supported buildStrategy values: latest_for_version, explicit_build_id.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
@@ -701,7 +716,9 @@ export class OpenAiCommandPlanner {
             "When a reply supplies one missing detail, combine it with the earlier request instead of re-asking for details already present in the conversation.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
+            "Use update_draft_release when the operator wants to update an existing draft version by attaching a TestFlight build or uploading localized release notes, without submitting for review.",
             "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
+            "If the operator says the version is already in draft mode or says to use the draft, do not ask whether to create/update the version; use update_draft_release.",
             "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
             "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
             "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",

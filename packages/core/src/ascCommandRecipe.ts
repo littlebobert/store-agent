@@ -388,6 +388,7 @@ export class OpenAiAscCommandRecipePlanner {
             "If you need richer details for one version, first use asc versions list to capture versionId, then use asc versions get --version-id ...",
             "When the operator wants to release an approved version that is pending developer release, prefer asc versions release with --version-id, --confirm, and --output json after resolving versionId.",
             "Do not invent asc versions view; use asc versions list or asc versions get.",
+            "Do not use asc app-info; this asc install does not support that command. Use asc localizations list --app ... --type app-info or asc localizations list --version ... when localization metadata is needed.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "Every step must include a short purpose string and an args array.",
             "Use the key steps for the ordered command list; do not rename it to commands or another key unless necessary.",
