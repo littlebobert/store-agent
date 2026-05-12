@@ -1,6 +1,14 @@
 import OpenAI from "openai";
 import { z } from "zod";
 
+import {
+  DEFAULT_OPENAI_MODEL,
+  DEFAULT_OPENAI_REASONING_EFFORT,
+  DEFAULT_OPENAI_SERVICE_TIER,
+  type OpenAiReasoningEffort,
+  type OpenAiServiceTier
+} from "./openaiCommandPlanner.js";
+
 const captureNameSchema = z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]*$/);
 
 export const ascCommandCaptureSchema = z.object({
@@ -280,9 +288,29 @@ function truncateForPrompt(content: string, maxChars = 50000): string {
   return `${content.slice(0, maxChars)}\n[truncated]`;
 }
 
+function withOpenAiRequestOptions<T extends object>(
+  params: T,
+  options: {
+    reasoningEffort?: OpenAiReasoningEffort;
+    serviceTier?: OpenAiServiceTier;
+  }
+): T {
+  const record = params as Record<string, unknown>;
+  if (options.reasoningEffort) {
+    record.reasoning_effort = options.reasoningEffort;
+  }
+  if (options.serviceTier) {
+    record.service_tier = options.serviceTier;
+  }
+
+  return params;
+}
+
 export interface OpenAiAscCommandRecipePlannerOptions {
   apiKey: string;
   model?: string;
+  reasoningEffort?: OpenAiReasoningEffort;
+  serviceTier?: OpenAiServiceTier;
 }
 
 export class OpenAiAscCommandRecipePlanner {
@@ -290,9 +318,16 @@ export class OpenAiAscCommandRecipePlanner {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiAscCommandRecipePlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
-    this.model = options.model ?? "gpt-5.4";
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async selectCommandPaths(input: {
@@ -305,7 +340,8 @@ export class OpenAiAscCommandRecipePlanner {
     notes?: string;
     commandCatalog: string[];
   }): Promise<string[]> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -339,7 +375,11 @@ export class OpenAiAscCommandRecipePlanner {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -365,7 +405,8 @@ export class OpenAiAscCommandRecipePlanner {
     previousRecipe?: AscCommandRecipe;
     validationError?: string;
   }): Promise<AscCommandRecipe> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -424,7 +465,11 @@ export class OpenAiAscCommandRecipePlanner {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -470,9 +515,16 @@ export class OpenAiCommandOutputSummarizer {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiAscCommandRecipePlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
-    this.model = options.model ?? "gpt-5.4";
+    this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async summarizeOutputs(input: {
@@ -483,7 +535,8 @@ export class OpenAiCommandOutputSummarizer {
       stdout: string;
     }>;
   }): Promise<OpenAiCommandOutputSummary> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -512,7 +565,11 @@ export class OpenAiCommandOutputSummarizer {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {

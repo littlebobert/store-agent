@@ -17,6 +17,8 @@ interface ReleaseExecutorOptions {
   ascPath?: string;
   openAiApiKey?: string;
   openAiModel?: string;
+  openAiReasoningEffort?: "low" | "medium" | "high";
+  openAiServiceTier?: "auto" | "default" | "flex" | "scale" | "priority";
 }
 
 export class ReleaseExecutor {
@@ -34,7 +36,9 @@ export class ReleaseExecutor {
         binaryPath: options.ascPath,
         env: process.env,
         openAiApiKey: options.openAiApiKey,
-        openAiModel: options.openAiModel
+        openAiModel: options.openAiModel,
+        openAiReasoningEffort: options.openAiReasoningEffort,
+        openAiServiceTier: options.openAiServiceTier
       }
     });
   }

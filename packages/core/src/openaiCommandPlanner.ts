@@ -12,11 +12,23 @@ import {
   type NormalizedActionRequest
 } from "./actions.js";
 
-export const DEFAULT_OPENAI_MODEL = "gpt-5.4";
+export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+export const DEFAULT_OPENAI_REASONING_EFFORT = "high";
+export const DEFAULT_OPENAI_SERVICE_TIER = "priority";
+
+export type OpenAiReasoningEffort = "low" | "medium" | "high";
+export type OpenAiServiceTier =
+  | "auto"
+  | "default"
+  | "flex"
+  | "scale"
+  | "priority";
 
 export interface OpenAiCommandPlannerOptions {
   apiKey: string;
   model?: string;
+  reasoningEffort?: OpenAiReasoningEffort;
+  serviceTier?: OpenAiServiceTier;
 }
 
 const statusSummarySchema = z.object({
@@ -58,6 +70,37 @@ export interface OpenAiConversationTurnResult {
   assistantReply: string;
   conversationContextReply?: string;
   plannedRequest: PlannedActionRequest | null;
+}
+
+const ACTION_ROUTING_GUIDE = [
+  "Action routing catalog:",
+  "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release dotsu for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action.",
+  "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator wants preparation/submission work before Apple approval. This action requires the actual release-note text; statements like 'release notes already exist' are not release-note text.",
+  "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
+  "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
+  "submit_release_for_review = submit an already prepared version to Apple review. Use when metadata/build are already prepared and the operator asks to submit for review, not to publish to customers.",
+  "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
+  "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
+  "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions.",
+  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+];
+
+function withOpenAiRequestOptions<T extends object>(
+  params: T,
+  options: {
+    reasoningEffort?: OpenAiReasoningEffort;
+    serviceTier?: OpenAiServiceTier;
+  }
+): T {
+  const record = params as Record<string, unknown>;
+  if (options.reasoningEffort) {
+    record.reasoning_effort = options.reasoningEffort;
+  }
+  if (options.serviceTier) {
+    record.service_tier = options.serviceTier;
+  }
+
+  return params;
 }
 
 function extractJsonPayload(content: string): string {
@@ -600,15 +643,23 @@ export class OpenAiCommandPlanner {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiCommandPlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
     this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async parseCommand(
     draft: DraftCommandInput
   ): Promise<PlannedActionRequest> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -633,16 +684,8 @@ export class OpenAiCommandPlanner {
             "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
-            "Use update_draft_release when the operator wants to update an existing draft version by attaching a TestFlight build or uploading localized release notes, without submitting for review.",
-            "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
-            "If the operator says the version is already in draft mode or says to use the draft, do not ask whether to create/update the version; use update_draft_release.",
-            "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
-            "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
-            "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
+            ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "Use release_status when the operator is asking about current release or review status.",
-            "Use run_asc_commands for all other App Store Connect workflows and read-only queries.",
             "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
@@ -665,7 +708,11 @@ export class OpenAiCommandPlanner {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -691,7 +738,8 @@ export class OpenAiCommandPlanner {
         .reverse()
         .find((message) => message.role === "user")
         ?.content ?? rawCommand;
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -715,16 +763,8 @@ export class OpenAiCommandPlanner {
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When a reply supplies one missing detail, combine it with the earlier request instead of re-asking for details already present in the conversation.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
-            "Use create_draft_release when the operator only wants to create an empty or draft App Store version/release without release notes, build attachment, validation, or review submission.",
-            "Use update_draft_release when the operator wants to update an existing draft version by attaching a TestFlight build or uploading localized release notes, without submitting for review.",
-            "Use prepare_release_for_review for end-to-end release preparation requests such as creating or updating an App Store version, adding release notes, localizing metadata, and submitting for review.",
-            "If the operator says the version is already in draft mode or says to use the draft, do not ask whether to create/update the version; use update_draft_release.",
-            "Do not use prepare_release_for_review when the version is already approved and the operator only wants the customer-facing release; use release_to_app_store instead.",
-            "Use release_to_app_store when the operator wants the final customer release step after Apple approved the version: Pending Developer Release → live on the App Store (asc versions release). Do not ask for release notes; metadata is already in App Store Connect.",
-            "Use submit_release_for_review when the operator wants to submit an already prepared version for review without asking to create the version or localize release notes.",
+            ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "Use release_status when the operator is asking about current release or review status.",
-            "Use run_asc_commands for all other App Store Connect workflows and read-only queries.",
             "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
@@ -751,7 +791,11 @@ export class OpenAiCommandPlanner {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -798,9 +842,16 @@ export class OpenAiStatusSummarizer {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiCommandPlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
     this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async summarizeStatus(input: {
@@ -808,7 +859,8 @@ export class OpenAiStatusSummarizer {
     provider: string;
     statusPayload: Record<string, unknown>;
   }): Promise<OpenAiStatusSummary> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -837,7 +889,11 @@ export class OpenAiStatusSummarizer {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -853,16 +909,24 @@ export class OpenAiErrorSummarizer {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiCommandPlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
     this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async summarizePlanningError(input: {
     rawCommand: string;
     rawError: string;
   }): Promise<OpenAiErrorSummary> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -888,7 +952,11 @@ export class OpenAiErrorSummarizer {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {
@@ -904,16 +972,24 @@ export class OpenAiReleaseNotesTranslator {
 
   private readonly model: string;
 
+  private readonly reasoningEffort?: OpenAiReasoningEffort;
+
+  private readonly serviceTier?: OpenAiServiceTier;
+
   public constructor(options: OpenAiCommandPlannerOptions) {
     this.client = new OpenAI({ apiKey: options.apiKey });
     this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.reasoningEffort =
+      options.reasoningEffort ?? DEFAULT_OPENAI_REASONING_EFFORT;
+    this.serviceTier = options.serviceTier ?? DEFAULT_OPENAI_SERVICE_TIER;
   }
 
   public async translateReleaseNotes(input: {
     baseNotes: string;
     locales: string[];
   }): Promise<Record<string, string>> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await this.client.chat.completions.create(
+      withOpenAiRequestOptions({
       model: this.model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -938,7 +1014,11 @@ export class OpenAiReleaseNotesTranslator {
           })
         }
       ]
-    });
+    }, {
+      reasoningEffort: this.reasoningEffort,
+      serviceTier: this.serviceTier
+    })
+    );
 
     const content = completion.choices[0]?.message.content;
     if (!content) {

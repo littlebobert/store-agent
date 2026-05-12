@@ -27,7 +27,21 @@ param postgresSkuName string = 'Standard_B1ms'
 param postgresVersion string = '16'
 param serviceBusQueueName string = 'release-requests'
 param slackCommandName string = '/asc'
-param openAiModel string = 'gpt-5.4'
+param openAiModel string = 'gpt-5.5'
+@allowed([
+  'low'
+  'medium'
+  'high'
+])
+param openAiReasoningEffort string = 'high'
+@allowed([
+  'auto'
+  'default'
+  'flex'
+  'scale'
+  'priority'
+])
+param openAiServiceTier string = 'priority'
 param approvalTtlMinutes int = 20
 
 @secure()
@@ -412,6 +426,14 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: openAiModel
             }
             {
+              name: 'OPENAI_REASONING_EFFORT'
+              value: openAiReasoningEffort
+            }
+            {
+              name: 'OPENAI_SERVICE_TIER'
+              value: openAiServiceTier
+            }
+            {
               name: 'APPROVAL_TTL_MINUTES'
               value: string(approvalTtlMinutes)
             }
@@ -568,6 +590,14 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'OPENAI_MODEL'
               value: openAiModel
+            }
+            {
+              name: 'OPENAI_REASONING_EFFORT'
+              value: openAiReasoningEffort
+            }
+            {
+              name: 'OPENAI_SERVICE_TIER'
+              value: openAiServiceTier
             }
             {
               name: 'ASC_PATH'

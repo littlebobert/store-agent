@@ -10,6 +10,8 @@ import {
   type NormalizedActionRequest,
   OpenAiAscCommandRecipePlanner,
   OpenAiCommandOutputSummarizer,
+  type OpenAiReasoningEffort,
+  type OpenAiServiceTier,
   OpenAiReleaseNotesTranslator,
   providerExecutionPlanSchema,
   providerExecutionResultSchema,
@@ -28,6 +30,8 @@ interface AscRuntimeOptions {
   env?: NodeJS.ProcessEnv;
   openAiApiKey?: string;
   openAiModel?: string;
+  openAiReasoningEffort?: OpenAiReasoningEffort;
+  openAiServiceTier?: OpenAiServiceTier;
 }
 
 interface AscCommandResult {
@@ -1401,15 +1405,21 @@ export class AppleAscProvider implements ProviderAdapter {
     if (options.openAiApiKey) {
       this.commandRecipePlanner = new OpenAiAscCommandRecipePlanner({
         apiKey: options.openAiApiKey,
-        model: options.openAiModel
+        model: options.openAiModel,
+        reasoningEffort: options.openAiReasoningEffort,
+        serviceTier: options.openAiServiceTier
       });
       this.commandOutputSummarizer = new OpenAiCommandOutputSummarizer({
         apiKey: options.openAiApiKey,
-        model: options.openAiModel
+        model: options.openAiModel,
+        reasoningEffort: options.openAiReasoningEffort,
+        serviceTier: options.openAiServiceTier
       });
       this.releaseNotesTranslator = new OpenAiReleaseNotesTranslator({
         apiKey: options.openAiApiKey,
-        model: options.openAiModel
+        model: options.openAiModel,
+        reasoningEffort: options.openAiReasoningEffort,
+        serviceTier: options.openAiServiceTier
       });
     }
   }

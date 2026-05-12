@@ -35,6 +35,15 @@
     "openAiApiKey": {
       "value": "sk-..."
     },
+    "openAiModel": {
+      "value": "gpt-5.5"
+    },
+    "openAiReasoningEffort": {
+      "value": "high"
+    },
+    "openAiServiceTier": {
+      "value": "priority"
+    },
     "ascKeyId": {
       "value": "ABC1234567"
     },

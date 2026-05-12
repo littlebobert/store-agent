@@ -368,22 +368,30 @@ async function main(): Promise<void> {
 
   const planner = new OpenAiCommandPlanner({
     apiKey: config.OPENAI_API_KEY,
-    model: config.OPENAI_MODEL
+    model: config.OPENAI_MODEL,
+    reasoningEffort: config.OPENAI_REASONING_EFFORT,
+    serviceTier: config.OPENAI_SERVICE_TIER
   });
   const errorSummarizer = new OpenAiErrorSummarizer({
     apiKey: config.OPENAI_API_KEY,
-    model: config.OPENAI_MODEL
+    model: config.OPENAI_MODEL,
+    reasoningEffort: config.OPENAI_REASONING_EFFORT,
+    serviceTier: config.OPENAI_SERVICE_TIER
   });
   const statusSummarizer = new OpenAiStatusSummarizer({
     apiKey: config.OPENAI_API_KEY,
-    model: config.OPENAI_MODEL
+    model: config.OPENAI_MODEL,
+    reasoningEffort: config.OPENAI_REASONING_EFFORT,
+    serviceTier: config.OPENAI_SERVICE_TIER
   });
   const providers = new ProviderRegistry({
     apple: {
       binaryPath: config.ASC_PATH,
       env: process.env,
       openAiApiKey: config.OPENAI_API_KEY,
-      openAiModel: config.OPENAI_MODEL
+      openAiModel: config.OPENAI_MODEL,
+      openAiReasoningEffort: config.OPENAI_REASONING_EFFORT,
+      openAiServiceTier: config.OPENAI_SERVICE_TIER
     }
   });
   const queue = new ReleaseQueuePublisher(

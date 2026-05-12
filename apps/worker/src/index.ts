@@ -13,7 +13,9 @@ async function main(): Promise<void> {
     slackBotToken: config.SLACK_BOT_TOKEN,
     ascPath: config.ASC_PATH,
     openAiApiKey: config.OPENAI_API_KEY,
-    openAiModel: config.OPENAI_MODEL
+    openAiModel: config.OPENAI_MODEL,
+    openAiReasoningEffort: config.OPENAI_REASONING_EFFORT,
+    openAiServiceTier: config.OPENAI_SERVICE_TIER
   });
 
   try {
