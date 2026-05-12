@@ -354,7 +354,7 @@ export class OpenAiAscCommandRecipePlanner {
             "Prefer 1-6 paths.",
             "Include both the top-level command group and the most likely nested subcommands when useful.",
             "For ratings questions, prefer reviews and reviews ratings.",
-            "For release status questions, prefer versions, versions list, and versions get when available.",
+            "For release status questions, prefer versions, versions list, and versions view when available; use versions get only if the command catalog lacks versions view.",
             "Do not invent command paths that are not in the catalog."
           ].join(" ")
         },
@@ -424,9 +424,9 @@ export class OpenAiAscCommandRecipePlanner {
             "For asc reviews ratings, use the ratings subcommand itself with flags like --app, --country, --all, --output, --pretty, and --workers only when needed.",
             "Do not use asc reviews get for aggregate rating questions.",
             "For release status or current version status questions, prefer asc versions list with --app, optional --version, optional --platform, and --output json.",
-            "If you need richer details for one version, first use asc versions list to capture versionId, then use asc versions get --version-id ...",
+            "If you need richer details for one version, first use asc versions list to capture versionId, then use asc versions view --version-id ... when available.",
             "When the operator wants to release an approved version that is pending developer release, prefer asc versions release with --version-id, --confirm, and --output json after resolving versionId.",
-            "Do not invent asc versions view; use asc versions list or asc versions get.",
+            "Use asc versions get only when asc versions view is absent from the provided docs or command catalog.",
             "Do not use asc app-info; this asc install does not support that command. Use asc localizations list --app ... --type app-info or asc localizations list --version ... when localization metadata is needed.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
             "Every step must include a short purpose string and an args array.",

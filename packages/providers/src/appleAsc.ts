@@ -81,6 +81,7 @@ const ASC_DOC_HELP_PATHS = [
   ["builds"],
   ["versions"],
   ["versions", "list"],
+  ["versions", "view"],
   ["versions", "get"],
   ["versions", "release"],
   ["submit"],
@@ -501,7 +502,12 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
       text
     )
   ) {
-    suggestions.push(["versions"], ["versions", "list"], ["versions", "get"]);
+    suggestions.push(
+      ["versions"],
+      ["versions", "list"],
+      ["versions", "view"],
+      ["versions", "get"]
+    );
   }
 
   if (
@@ -520,10 +526,13 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
       text
     )
   ) {
-    suggestions.push(["versions"], ["versions", "list"], ["versions", "get"], [
-      "versions",
-      "release"
-    ]);
+    suggestions.push(
+      ["versions"],
+      ["versions", "list"],
+      ["versions", "view"],
+      ["versions", "get"],
+      ["versions", "release"]
+    );
   }
 
   if (
@@ -534,6 +543,7 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
     suggestions.push(
       ["versions"],
       ["versions", "list"],
+      ["versions", "view"],
       ["versions", "get"],
       ["localizations"],
       ["localizations", "list"],
@@ -906,7 +916,19 @@ function buildVersionCreateArgs(
   return args;
 }
 
-function buildVersionGetArgs(versionId: string): string[] {
+function buildVersionViewArgs(versionId: string): string[] {
+  return [
+    "versions",
+    "view",
+    "--version-id",
+    versionId,
+    "--include-build",
+    "--output",
+    "json"
+  ];
+}
+
+function buildLegacyVersionGetArgs(versionId: string): string[] {
   return [
     "versions",
     "get",
@@ -1336,6 +1358,39 @@ async function readProcessOutput(
     ...result,
     json
   };
+}
+
+function shouldFallbackToLegacyVersionGet(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    /asc\s+versions\s+view/i.test(error.message) &&
+    /\b(unknown|unsupported|invalid|not found|no such command|no help topic)\b/i.test(
+      error.message
+    )
+  );
+}
+
+async function readVersionDetailsOutput(
+  binaryPath: string,
+  versionId: string,
+  env: NodeJS.ProcessEnv
+): Promise<AscCommandResult> {
+  try {
+    return await readProcessOutput(binaryPath, buildVersionViewArgs(versionId), env);
+  } catch (error) {
+    if (shouldFallbackToLegacyVersionGet(error)) {
+      return readProcessOutput(
+        binaryPath,
+        buildLegacyVersionGetArgs(versionId),
+        env
+      );
+    }
+
+    throw error;
+  }
 }
 
 function buildAscEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1942,9 +1997,9 @@ export class AppleAscProvider implements ProviderAdapter {
         version,
         app.platform
       );
-      const versionDetails = await readProcessOutput(
+      const versionDetails = await readVersionDetailsOutput(
         this.binaryPath,
-        buildVersionGetArgs(resolvedVersion.versionId),
+        resolvedVersion.versionId,
         this.env
       );
 
@@ -2095,9 +2150,9 @@ export class AppleAscProvider implements ProviderAdapter {
       let localizationsDryRun: AscCommandResult | null = null;
 
       if (versionRecord) {
-        versionDetails = await readProcessOutput(
+        versionDetails = await readVersionDetailsOutput(
           this.binaryPath,
-          buildVersionGetArgs(versionRecord.versionId),
+          versionRecord.versionId,
           this.env
         );
         attachedBuildId = extractAttachedBuildId(versionDetails.json);
@@ -2548,9 +2603,9 @@ export class AppleAscProvider implements ProviderAdapter {
         env: this.env
       });
       const versionId = ensuredVersion.versionRecord.versionId;
-      const versionDetails = await readProcessOutput(
+      const versionDetails = await readVersionDetailsOutput(
         this.binaryPath,
-        buildVersionGetArgs(versionId),
+        versionId,
         this.env
       );
       const attachedBuildId = extractAttachedBuildId(versionDetails.json);
