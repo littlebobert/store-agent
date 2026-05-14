@@ -79,10 +79,12 @@ interface CommandExecutionState {
 const ASC_DOC_HELP_PATHS = [
   ["apps"],
   ["builds"],
+  ["builds", "latest"],
   ["versions"],
   ["versions", "list"],
   ["versions", "view"],
   ["versions", "get"],
+  ["versions", "attach-build"],
   ["versions", "release"],
   ["localizations"],
   ["localizations", "list"],
@@ -523,12 +525,15 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
 
   if (/\bsubmit\b|\breview\b|審査/i.test(text)) {
     suggestions.push(
+      ["builds"],
+      ["builds", "latest"],
       ["review"],
       ["review", "submissions-create"],
       ["review", "items-add"],
       ["review", "submissions-submit"],
       ["versions"],
-      ["versions", "list"]
+      ["versions", "list"],
+      ["versions", "attach-build"]
     );
   }
 

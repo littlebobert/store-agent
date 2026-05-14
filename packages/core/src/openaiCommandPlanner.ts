@@ -75,14 +75,14 @@ export interface OpenAiConversationTurnResult {
 const ACTION_ROUTING_GUIDE = [
   "Action routing catalog:",
   "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release dotsu for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action.",
-  "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator wants preparation/submission work before Apple approval. This action requires the actual release-note text; statements like 'release notes already exist' are not release-note text.",
+  "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes. Statements like 'release notes already exist' are not release-note text.",
   "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
   "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
   "submit_release_for_review = submit an already prepared version to Apple review. Use when metadata/build are already prepared and the operator asks to submit for review, not to publish to customers.",
   "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
   "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
-  "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions.",
-  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+  "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including attaching a TestFlight build and submitting it for review when no new release-note source text is provided.",
+  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'attach the latest TestFlight to dotsu for iOS 1.4.4 and submit it for review' -> run_asc_commands; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
 ];
 
 function withOpenAiRequestOptions<T extends object>(
@@ -243,6 +243,7 @@ function inferActionTypeFromCommandText(
 
   const mentionsReleaseNotes =
     /\brelease notes?\b|what'?s new|リリースノート/i.test(normalized);
+  const hasReleaseNoteSource = providesReleaseNoteSourceText(normalized);
   const mentionsLocalization =
     /\btranslate\b|\btranslation\b|\blocali[sz](?:e|ed|ation)?\b|翻訳|ローカライズ/i.test(
       normalized
@@ -294,7 +295,7 @@ function inferActionTypeFromCommandText(
   if (
     hasExplicitVersion &&
     mentionsAttachBuild &&
-    mentionsReleaseNotes &&
+    hasReleaseNoteSource &&
     !mentionsSubmitForReview &&
     /\bdraft\b|\bfill(?:\s+it)?\s+in\b|\bupdate\b|\buse\s+the\s+draft\b/i.test(
       normalized
@@ -307,8 +308,7 @@ function inferActionTypeFromCommandText(
     hasExplicitVersion &&
     mentionsAttachBuild &&
     !mentionsCreateOrPrepare &&
-    !mentionsSubmitForReview &&
-    !mentionsReleaseNotes &&
+    !hasReleaseNoteSource &&
     !mentionsLocalization
   ) {
     return "run_asc_commands";
@@ -319,8 +319,8 @@ function inferActionTypeFromCommandText(
     (
       mentionsCreateOrPrepare ||
       (mentionsSubmitForReview &&
-        (mentionsReleaseNotes || mentionsLocalization || mentionsAttachBuild)) ||
-      ((mentionsReleaseNotes || mentionsLocalization) &&
+        (hasReleaseNoteSource || mentionsLocalization)) ||
+      ((hasReleaseNoteSource || mentionsLocalization) &&
         /\b(release|review|submit|version|testflight|build|apple|app store)\b|リリース|審査|バージョン|TestFlight|ビルド/i.test(
           normalized
         ))
@@ -408,6 +408,26 @@ function requestedGenericReleaseNotes(text: string): boolean {
   );
 }
 
+function saysReleaseNotesAlreadyExist(text: string): boolean {
+  return /\brelease notes?\b.*\b(already|existing|exist|attached|uploaded|provided|set|ready)\b|\b(already|existing)\b.*\brelease notes?\b|リリースノート.*(既に|すでに|添付済み|設定済み|登録済み|あります|入って)/i.test(
+    text
+  );
+}
+
+function providesReleaseNoteSourceText(text: string): boolean {
+  if (requestedGenericReleaseNotes(text)) {
+    return true;
+  }
+
+  if (saysReleaseNotesAlreadyExist(text)) {
+    return false;
+  }
+
+  return /\brelease notes?\s*[:：]\s*\S|\bwhat'?s new\s*[:：]\s*\S|\b(?:with|add|set|upload|use)\s+(?:these\s+)?release notes?\s+["'`“]?\S|\brelease notes?\s+(?:to|as|should be|are)\s+["'`“]?\S|リリースノート\s*[:：]\s*\S|リリースノート.*(?:として|内容は)\s*\S/i.test(
+    text
+  );
+}
+
 function normalizePlannerOutput(
   value: unknown,
   input: {
@@ -431,6 +451,7 @@ function normalizePlannerOutput(
   const appReference = record.appReference ?? record.appAlias;
   const version = record.version;
   const releaseNotes = record.releaseNotes;
+  const releaseNoteSourceProvided = providesReleaseNoteSourceText(input.rawCommand);
 
   if (input.previousRequest) {
     for (const key of [
@@ -565,6 +586,13 @@ function normalizePlannerOutput(
     }
   }
 
+  if (
+    typeof record.releaseNotes === "string" &&
+    !releaseNoteSourceProvided
+  ) {
+    delete record.releaseNotes;
+  }
+
   if (typeof record.releaseNotes !== "string" && typeof record.notes !== "string") {
     const extractedNotes = extractFirstMeaningfulString(record.notes, [
       "source",
@@ -583,7 +611,8 @@ function normalizePlannerOutput(
   if (
     typeof record.releaseNotes !== "string" &&
     record.actionType === "prepare_release_for_review" &&
-    typeof record.notes === "string"
+    typeof record.notes === "string" &&
+    releaseNoteSourceProvided
   ) {
     record.releaseNotes = record.notes;
   }
@@ -685,8 +714,9 @@ export class OpenAiCommandPlanner {
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build to a version, with or without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
+            "Never put the operator's instruction itself in releaseNotes. Only use releaseNotes when the user explicitly provides release-note source text, such as 'release notes: ...', or explicitly asks for generic release notes.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
             "If the operator asks you to make up generic release notes, use a generic source string such as 'Bug fixes and performance improvements.' and do not ask for release notes text.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",
@@ -763,8 +793,9 @@ export class OpenAiCommandPlanner {
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "If the operator only wants to attach the latest TestFlight build to a version, use run_asc_commands, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build to a version, with or without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
+            "Never put the operator's instruction itself in releaseNotes. Only use releaseNotes when the user explicitly provides release-note source text, such as 'release notes: ...', or explicitly asks for generic release notes.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
             "If the operator asks you to make up generic release notes, use a generic source string such as 'Bug fixes and performance improvements.' and do not ask for release notes text.",
             "If the operator includes extra context like release notes or desired behavior, preserve it in notes unless it belongs in releaseNotes.",

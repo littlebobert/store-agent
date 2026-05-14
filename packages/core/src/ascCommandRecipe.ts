@@ -355,6 +355,7 @@ export class OpenAiAscCommandRecipePlanner {
             "Include both the top-level command group and the most likely nested subcommands when useful.",
             "For ratings questions, prefer reviews and reviews ratings.",
             "For App Store review submission requests, prefer review, review submissions-create, review items-add, and review submissions-submit.",
+            "For requests that attach a TestFlight build and submit for review, include builds latest and versions attach-build when available.",
             "For release status questions, prefer versions, versions list, and versions view when available; use versions get only if the command catalog lacks versions view.",
             "Do not invent command paths that are not in the catalog."
           ].join(" ")
@@ -429,6 +430,7 @@ export class OpenAiAscCommandRecipePlanner {
             "When the operator wants to release an approved version that is pending developer release, prefer asc versions release with --version-id, --confirm, and --output json after resolving versionId.",
             "Do not use asc submit create; that command was removed.",
             "When submitting a prepared App Store version for review, use asc review submissions-create to capture submissionId, asc review items-add with --item-type appStoreVersions and the versionId, then asc review submissions-submit --id {{submissionId}} --confirm.",
+            "When the operator asks to attach the latest TestFlight build and submit for review, do not upload or localize release notes unless the operator explicitly provided new release-note source text. Resolve buildId with asc builds latest, resolve versionId with asc versions list, attach with asc versions attach-build, validate, then use the review submission flow.",
             "Use asc versions get only when asc versions view is absent from the provided docs or command catalog.",
             "Do not use asc app-info; this asc install does not support that command. Use asc localizations list --app ... --type app-info or asc localizations list --version ... when localization metadata is needed.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",
