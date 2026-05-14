@@ -84,12 +84,16 @@ const ASC_DOC_HELP_PATHS = [
   ["versions", "view"],
   ["versions", "get"],
   ["versions", "release"],
-  ["submit"],
-  ["submit", "status"],
   ["localizations"],
   ["localizations", "list"],
   ["localizations", "upload"],
   ["review"],
+  ["review", "submissions-list"],
+  ["review", "submissions-get"],
+  ["review", "submissions-create"],
+  ["review", "items-add"],
+  ["review", "submissions-submit"],
+  ["review", "submissions-cancel"],
   ["validate"],
   ["testflight"],
   ["reviews"],
@@ -518,7 +522,14 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
   }
 
   if (/\bsubmit\b|\breview\b|審査/i.test(text)) {
-    suggestions.push(["submit"], ["versions"], ["versions", "list"]);
+    suggestions.push(
+      ["review"],
+      ["review", "submissions-create"],
+      ["review", "items-add"],
+      ["review", "submissions-submit"],
+      ["versions"],
+      ["versions", "list"]
+    );
   }
 
   if (
@@ -567,20 +578,23 @@ function isWriteCommandArgs(args: string[]): boolean {
 
   const path = parseCommandPath(args);
   const lastSegment = path.at(-1) ?? "";
+  const writeVerbs = [
+    "create",
+    "update",
+    "delete",
+    "remove",
+    "upload",
+    "release",
+    "cancel",
+    "set",
+    "submit",
+    "attach-build",
+    "add"
+  ];
   if (
-    [
-      "create",
-      "update",
-      "delete",
-      "remove",
-      "upload",
-      "release",
-      "cancel",
-      "set",
-      "submit",
-      "attach-build",
-      "add"
-    ].includes(lastSegment)
+    writeVerbs.some(
+      (verb) => lastSegment === verb || lastSegment.endsWith(`-${verb}`)
+    )
   ) {
     return true;
   }
@@ -1020,26 +1034,66 @@ function buildValidateArgs(
   ];
 }
 
-function buildSubmitCreateArgs(
-  appId: string,
-  versionId: string,
-  buildId: string,
-  platform: string
-): string[] {
+function buildReviewSubmissionCreateArgs(appId: string, platform: string): string[] {
   return [
-    "submit",
-    "create",
+    "review",
+    "submissions-create",
     "--app",
     appId,
-    "--version-id",
-    versionId,
-    "--build",
-    buildId,
     "--platform",
     platform,
+    "--output",
+    "json"
+  ];
+}
+
+function buildReviewItemAddArgs(
+  submissionId: string,
+  versionId: string
+): string[] {
+  return [
+    "review",
+    "items-add",
+    "--submission",
+    submissionId,
+    "--item-type",
+    "appStoreVersions",
+    "--item-id",
+    versionId,
+    "--output",
+    "json"
+  ];
+}
+
+function buildReviewSubmissionSubmitArgs(submissionId: string): string[] {
+  return [
+    "review",
+    "submissions-submit",
+    "--id",
+    submissionId,
     "--confirm",
     "--output",
     "json"
+  ];
+}
+
+function buildReviewSubmissionPreviewCommands(
+  binaryPath: string,
+  appId: string,
+  versionId: string,
+  platform: string
+): string[] {
+  const submissionId = "<review-submission-id>";
+  return [
+    buildDisplayCommand(
+      binaryPath,
+      buildReviewSubmissionCreateArgs(appId, platform)
+    ),
+    buildDisplayCommand(
+      binaryPath,
+      buildReviewItemAddArgs(submissionId, versionId)
+    ),
+    buildDisplayCommand(binaryPath, buildReviewSubmissionSubmitArgs(submissionId))
   ];
 }
 
@@ -1273,6 +1327,51 @@ function summarizeReleaseToAppStorePlan(input: {
     "Will run asc versions release (--confirm) to publish this version on the App Store (Pending Developer Release → live)."
   );
   return lines;
+}
+
+async function submitVersionForReview(input: {
+  binaryPath: string;
+  appId: string;
+  versionId: string;
+  platform: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  submissionCreate: AscCommandResult;
+  itemAdd: AscCommandResult;
+  submissionSubmit: AscCommandResult;
+}> {
+  const submissionCreate = await readProcessOutput(
+    input.binaryPath,
+    buildReviewSubmissionCreateArgs(input.appId, input.platform),
+    input.env
+  );
+  const submissionId =
+    findFirstString(submissionCreate.json, [
+      "id",
+      "data.id",
+      "data.attributes.id",
+      "reviewSubmissionId",
+      "data.reviewSubmissionId"
+    ]) ?? "";
+
+  if (!submissionId) {
+    throw new Error(
+      "Unable to resolve review submission ID from asc review submissions-create output."
+    );
+  }
+
+  const itemAdd = await readProcessOutput(
+    input.binaryPath,
+    buildReviewItemAddArgs(submissionId, input.versionId),
+    input.env
+  );
+  const submissionSubmit = await readProcessOutput(
+    input.binaryPath,
+    buildReviewSubmissionSubmitArgs(submissionId),
+    input.env
+  );
+
+  return { submissionCreate, itemAdd, submissionSubmit };
 }
 
 function extractLocalizedReleaseNotesFromPlan(
@@ -2218,14 +2317,11 @@ export class AppleAscProvider implements ProviderAdapter {
       );
       if (!updatesExistingDraft) {
         previewCommands.push(
-          buildDisplayCommand(
+          ...buildReviewSubmissionPreviewCommands(
             this.binaryPath,
-            buildSubmitCreateArgs(
-              app.appId,
-              previewVersionId,
-              buildId,
-              app.platform
-            )
+            app.appId,
+            previewVersionId,
+            app.platform
           )
         );
       }
@@ -2316,14 +2412,11 @@ export class AppleAscProvider implements ProviderAdapter {
 
     if (request.actionType === "submit_release_for_review") {
       previewCommands.push(
-        buildDisplayCommand(
+        ...buildReviewSubmissionPreviewCommands(
           this.binaryPath,
-          buildSubmitCreateArgs(
-            app.appId,
-            resolvedVersion.versionId,
-            buildId,
-            app.platform
-          )
+          app.appId,
+          resolvedVersion.versionId,
+          app.platform
         )
       );
     }
@@ -2641,16 +2734,13 @@ export class AppleAscProvider implements ProviderAdapter {
       );
       const submit = updatesExistingDraft
         ? null
-        : await readProcessOutput(
-            this.binaryPath,
-            buildSubmitCreateArgs(
-              context.app.appId,
-              versionId,
-              buildId,
-              context.app.platform
-            ),
-            this.env
-          );
+        : await submitVersionForReview({
+            binaryPath: this.binaryPath,
+            appId: context.app.appId,
+            versionId,
+            platform: context.app.platform,
+            env: this.env
+          });
 
       return providerExecutionResultSchema.parse({
         ok: true,
@@ -2665,7 +2755,13 @@ export class AppleAscProvider implements ProviderAdapter {
           localizationsUpload: localizationResults.upload.json,
           attachBuild: attachBuild?.json,
           validation: validation.json,
-          submit: submit?.json
+          submit: submit
+            ? {
+                submissionCreate: submit.submissionCreate.json,
+                itemAdd: submit.itemAdd.json,
+                submissionSubmit: submit.submissionSubmit.json
+              }
+            : null
         }
       });
     }
@@ -2683,21 +2779,22 @@ export class AppleAscProvider implements ProviderAdapter {
       version,
       context.app.platform
     );
-    const submit = await readProcessOutput(
-      this.binaryPath,
-      buildSubmitCreateArgs(
-        context.app.appId,
-        resolvedVersion.versionId,
-        buildId,
-        context.app.platform
-      ),
-      this.env
-    );
+    const submit = await submitVersionForReview({
+      binaryPath: this.binaryPath,
+      appId: context.app.appId,
+      versionId: resolvedVersion.versionId,
+      platform: context.app.platform,
+      env: this.env
+    });
 
     return providerExecutionResultSchema.parse({
       ok: true,
       summary: `Submitted version ${version} build ${context.plan.buildNumber ?? context.plan.buildId} to App Store review.`,
-      rawResult: submit.json
+      rawResult: {
+        submissionCreate: submit.submissionCreate.json,
+        itemAdd: submit.itemAdd.json,
+        submissionSubmit: submit.submissionSubmit.json
+      }
     });
   }
 }

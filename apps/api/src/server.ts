@@ -1156,7 +1156,7 @@ async function main(): Promise<void> {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `${revalidationCopy}\n\`\`\`${approval.executionPlan.previewCommands.at(-1) ?? "asc submit create"}\`\`\``
+              text: `${revalidationCopy}\n\`\`\`${approval.executionPlan.previewCommands.at(-1) ?? "asc review submissions-submit"}\`\`\``
             }
           }
         ]
